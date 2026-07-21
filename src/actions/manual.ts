@@ -11,7 +11,15 @@ export interface ManualEntryPayload {
   referenceNote?: string
 }
 
-export async function validateManualEntry(payload: ManualEntryPayload) {
+export type ValidationResult = 
+  | { success: true; currentBalance: number; projectedBalance: number }
+  | { success: false; error: string };
+
+export type CommitResult = 
+  | { success: true; message: string; sourceRefId?: string }
+  | { success: false; error: string };
+
+export async function validateManualEntry(payload: ManualEntryPayload): Promise<ValidationResult> {
   // 1. Basic checks
   if (payload.qty <= 0) return { success: false, error: 'Kuantitas harus lebih dari 0' }
   
@@ -39,7 +47,7 @@ export async function validateManualEntry(payload: ManualEntryPayload) {
   }
 }
 
-export async function commitManualEntry(payload: ManualEntryPayload, idempotencyKey?: string) {
+export async function commitManualEntry(payload: ManualEntryPayload, idempotencyKey?: string): Promise<CommitResult> {
   // Run validation again for security
   const val = await validateManualEntry(payload)
   if (!val.success) return val
@@ -69,7 +77,7 @@ export async function commitManualEntry(payload: ManualEntryPayload, idempotency
   return { success: true, message: 'Entri manual berhasil dicatat', sourceRefId }
 }
 
-export async function commitCorrection(ledgerId: string, correctionNote: string, idempotencyKey: string) {
+export async function commitCorrection(ledgerId: string, correctionNote: string, idempotencyKey: string): Promise<CommitResult> {
   if (!correctionNote || correctionNote.trim() === '') {
     return { success: false, error: 'Alasan koreksi wajib diisi' }
   }
