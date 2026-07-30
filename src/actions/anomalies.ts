@@ -28,3 +28,23 @@ export async function resolveAnomaly(anomalyId: string, resolutionNote: string) 
 
   return { success: true }
 }
+
+export async function getOpenAnomalies() {
+  const adminClient = createAdminClient()
+  const { data, count, error } = await adminClient
+    .from('anomalies')
+    .select('id, type, description, detected_at, status', { count: 'exact' })
+    .eq('status', 'OPEN')
+    .order('detected_at', { ascending: true })
+
+  if (error) {
+    console.error('Error fetching open anomalies:', error)
+  }
+
+  const resultCount = data ? data.length : (count || 0)
+
+  return {
+    data: data || [],
+    count: resultCount
+  }
+}

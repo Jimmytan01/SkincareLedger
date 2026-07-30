@@ -3,6 +3,7 @@
 import { createAdminClient } from '@/utils/supabase/admin'
 import { MarketplaceEventSchema, MarketplaceEvent } from '@/types/marketplace'
 import { processStockOutFefo, ReasonCode, Channel } from './stock'
+import { formatQty } from '@/utils/format'
 
 export async function processMarketplaceEvent(event: MarketplaceEvent) {
   // 1. Server-side validation via Zod
@@ -166,35 +167,87 @@ async function handleCancelled(supabase: any, event: MarketplaceEvent) {
   // Get order
   const { data: order } = await supabase.from('orders').select('id, status').eq('marketplace_order_id', event.order_id).single()
   if (!order) {
-    // If order not found, nothing to cancel (maybe creation failed or missed)
     return { success: true, message: 'Order not found, nothing to cancel' }
   }
 
   if (order.status === 'CANCELLED') return { success: true, message: 'Order already cancelled' }
 
-  // If order was CREATED, just update status. No ledger impact (reservation dropped)
-  if (order.status === 'CREATED') {
+  // Get order items to record item-level cancellation
+  const { data: orderItems } = await supabase.from('order_items').select('*').eq('order_id', order.id)
+  
+  let isPartialCancel = false
+
+  if (orderItems && orderItems.length > 0 && event.items && event.items.length > 0) {
+    const cancelInserts = []
+    
+    // Calculate total order quantity
+    const totalOriginalOrderQty = orderItems.reduce((sum: number, oi: any) => sum + (oi.bundle_order_qty || oi.qty || 1), 0)
+    
+    // Calculate cumulative previously cancelled/returned quantity
+    const { data: existingReturns } = await supabase
+      .from('returns')
+      .select('qty_requested, order_item_id')
+      .eq('order_id', order.id)
+
+    const prevProcessedQty = (existingReturns || []).reduce((sum: number, r: any) => sum + (Number(r.qty_requested) || 0), 0)
+    let totalCancelledThisEvent = 0
+
+    for (const cancelItem of event.items) {
+      const { data: prod } = await supabase.from('products').select('id').eq('sku', cancelItem.sku).single()
+      
+      let matchedItems = orderItems.filter((oi: any) => 
+        oi.bundle_sku === cancelItem.sku || (!oi.bundle_sku && oi.product_id === prod?.id)
+      )
+
+      if (matchedItems.length === 0) {
+        matchedItems = orderItems
+      }
+
+      for (const oi of matchedItems) {
+        let componentQtyToCancel = cancelItem.qty
+        if (oi.bundle_sku && oi.bundle_order_qty) {
+          const qtyPerBundle = oi.qty / oi.bundle_order_qty
+          componentQtyToCancel = qtyPerBundle * cancelItem.qty
+        }
+
+        totalCancelledThisEvent += cancelItem.qty
+        cancelInserts.push({
+          order_id: order.id,
+          order_item_id: oi.id,
+          qty_requested: componentQtyToCancel,
+          status: 'PENDING_INSPECTION'
+        })
+      }
+    }
+
+    if (cancelInserts.length > 0) {
+      await supabase.from('returns').insert(cancelInserts)
+    }
+
+    if ((prevProcessedQty + totalCancelledThisEvent) < totalOriginalOrderQty) {
+      isPartialCancel = true
+    }
+  }
+
+  // Update order status to CANCELLED only if full order is cancelled
+  if (!isPartialCancel) {
     await supabase.rpc('update_order_status', {
       p_order_id: order.id,
       p_status: 'CANCELLED'
     })
-    return { success: true, message: 'Order cancelled, reservations released' }
   }
 
-  // If order was SHIPPED_IN_TRANSIT, we need to reverse the ledger
+  // If order was SHIPPED_IN_TRANSIT, reverse ledger
   if (order.status === 'SHIPPED_IN_TRANSIT') {
-    // Use atomic RPC for marketplace cancel
     const { error: cancelErr } = await supabase.rpc('process_marketplace_cancel', {
       p_order_id: event.order_id,
       p_channel: event.channel
     })
 
     if (cancelErr) throw new Error(`Failed to process marketplace cancel reversal: ${cancelErr.message}`)
-
-    return { success: true, message: 'Order cancelled and stock returned via atomic ledger reversal' }
   }
 
-  return { success: true, message: 'Unhandled cancellation scenario' }
+  return { success: true, message: isPartialCancel ? 'Partial cancellation processed' : 'Order cancelled' }
 }
 
 async function handleReturnRequested(supabase: any, event: MarketplaceEvent) {
@@ -202,23 +255,15 @@ async function handleReturnRequested(supabase: any, event: MarketplaceEvent) {
   const { data: order } = await supabase.from('orders').select('id, status').eq('marketplace_order_id', event.order_id).single()
   if (!order) return { success: true, message: 'Order not found, skipping return' }
 
-  // Must be shipped/in transit to be returned realistically, but let's just process it based on items
   // Fetch all order_items for this order
   const { data: orderItems } = await supabase.from('order_items').select('*').eq('order_id', order.id)
   if (!orderItems || orderItems.length === 0) return { success: true, message: 'No items in order to return' }
 
-  // Map incoming returned SKUs to order_items. 
-  // An event.item might refer to a bundle_sku or a product sku.
   const returnInserts = []
 
   for (const retItem of event.items) {
-    // Find matching order_items. We prioritize matching by bundle_sku if it's a bundle, or product sku.
-    // However, since we don't have product sku directly in order_items (we have product_id), we need to resolve it.
-    // Let's resolve the incoming retItem.sku to a product_id first to check if it's a single product match.
     const { data: prod } = await supabase.from('products').select('id').eq('sku', retItem.sku).single()
     
-    // An incoming SKU might match multiple order_items (components of a bundle).
-    // We look for order_items where bundle_sku === retItem.sku, OR product_id === prod?.id (if not part of a bundle).
     let matchedItems = orderItems.filter((oi: any) => 
       oi.bundle_sku === retItem.sku || (!oi.bundle_sku && oi.product_id === prod?.id)
     )
@@ -228,10 +273,7 @@ async function handleReturnRequested(supabase: any, event: MarketplaceEvent) {
       continue
     }
 
-    // Insert a return record for each matched order_item component
     for (const oi of matchedItems) {
-      // If it was a bundle, the incoming qty is for the bundle.
-      // E.g. returning 1 bundle. The component qty returned should be: (oi.qty / oi.bundle_order_qty) * retItem.qty.
       let componentQtyToReturn = retItem.qty
       if (oi.bundle_sku && oi.bundle_order_qty) {
         const qtyPerBundle = oi.qty / oi.bundle_order_qty
@@ -254,4 +296,130 @@ async function handleReturnRequested(supabase: any, event: MarketplaceEvent) {
 
   return { success: true, message: 'Return requests created in inbox' }
 }
+
+import { getInactiveBundleSkus } from './bundle'
+
+export async function getProductsAndBundlesForSimulation() {
+  const adminClient = createAdminClient()
+  const [productsRes, bundleRecipesRes, inactiveSkus] = await Promise.all([
+    adminClient.from('products').select('id, name, sku').order('name'),
+    adminClient.from('bundle_recipes').select('bundle_sku').order('bundle_sku'),
+    getInactiveBundleSkus()
+  ])
+  
+  const products = productsRes.data
+  const bundleRecipes = bundleRecipesRes.data
+
+  const options: { sku: string; label: string; isBundle?: boolean }[] = []
+
+  if (products) {
+    for (const p of products) {
+      options.push({ sku: p.sku, label: `${p.name} (SKU: ${p.sku})` })
+    }
+  }
+
+  if (bundleRecipes) {
+    const bundleSkus = Array.from(new Set(bundleRecipes.map((b: any) => b.bundle_sku)))
+    for (const bSku of bundleSkus) {
+      // Exclude inactive bundle SKUs
+      if (inactiveSkus.includes(bSku)) continue
+
+      if (!options.some(o => o.sku === bSku)) {
+        options.push({ sku: bSku, label: `Paket Bundle: ${bSku}`, isBundle: true })
+      }
+    }
+  }
+
+  return options
+}
+
+export async function getSimulationOrders() {
+  const adminClient = createAdminClient()
+
+  // Fetch orders and all return/cancellation entries in parallel
+  const [ordersRes, returnsRes] = await Promise.all([
+    adminClient
+      .from('orders')
+      .select(`
+        id,
+        marketplace_order_id,
+        channel,
+        status,
+        created_at,
+        order_items (
+          id,
+          qty,
+          bundle_sku,
+          bundle_order_qty,
+          product:products (id, sku, name)
+        )
+      `)
+      .order('created_at', { ascending: false })
+      .limit(50),
+    adminClient
+      .from('returns')
+      .select('order_id, order_item_id, qty_requested, status')
+  ])
+
+  const orders = ordersRes.data || []
+  const allReturns = returnsRes.data || []
+
+  return orders.map((o: any) => {
+    const rawItems = o.order_items || []
+    const isWholeOrderCancelled = o.status === 'CANCELLED'
+
+    // Map order items and calculate remaining quota (sisaKuota)
+    const mappedItems: { id: string; sku: string; name: string; originalQty: number; sisaKuota: number; label: string }[] = []
+    
+    rawItems.forEach((oi: any) => {
+      const isBundle = Boolean(oi.bundle_sku)
+      const sku = oi.bundle_sku || oi.product?.sku || ''
+      const name = isBundle ? `Paket Bundle ${oi.bundle_sku}` : (oi.product?.name || sku)
+      const originalQty = oi.bundle_order_qty || oi.qty || 1
+
+      // Deduplicate by SKU for bundle explosion items
+      if (!mappedItems.some(item => item.sku === sku)) {
+        let sisaKuota = 0
+
+        if (!isWholeOrderCancelled) {
+          // Sum all returned / cancelled quantities for this order item
+          const itemReturnRows = allReturns.filter((r: any) => r.order_item_id === oi.id)
+          const totalQtyRequested = itemReturnRows.reduce((sum: number, r: any) => sum + (Number(r.qty_requested) || 0), 0)
+
+          let itemProcessedQty = totalQtyRequested
+          if (isBundle && oi.bundle_order_qty) {
+            const qtyPerBundle = oi.qty / oi.bundle_order_qty
+            itemProcessedQty = totalQtyRequested / (qtyPerBundle || 1)
+          }
+
+          sisaKuota = Math.max(0, originalQty - Math.round(itemProcessedQty))
+        }
+
+        mappedItems.push({
+          id: oi.id,
+          sku,
+          name,
+          originalQty,
+          sisaKuota,
+          label: `${name} (SKU: ${sku}) — Sisa: ${formatQty(sisaKuota)} dari ${formatQty(originalQty)}`
+        })
+      }
+    })
+
+    const firstItem = mappedItems[0]
+
+    return {
+      id: o.id,
+      marketplace_order_id: o.marketplace_order_id,
+      channel: o.channel,
+      status: o.status,
+      created_at: o.created_at,
+      items: mappedItems,
+      sku: firstItem?.sku || '',
+      qty: firstItem?.sisaKuota || 0,
+      label: `${o.marketplace_order_id} (${o.channel} | Status: ${o.status})`
+    }
+  })
+}
+
 

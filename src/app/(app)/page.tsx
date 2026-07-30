@@ -1,86 +1,242 @@
-import { createClient } from '@/utils/supabase/server'
+import { createAdminClient } from '@/utils/supabase/admin'
 import DashboardClient from '@/components/DashboardClient'
+import { formatQty } from '@/utils/format'
+import { getOpenAnomalies } from '@/actions/anomalies'
+
+export const dynamic = 'force-dynamic'
+
+export interface AttentionItem {
+  id: string
+  category: 'ANOMALY' | 'EXPIRY' | 'TIKTOK_CLAIM' | 'PENDING_RETURN'
+  severity: 'CRITICAL' | 'WARNING' | 'INFO'
+  severityOrder: number
+  badgeLabel: string
+  title: string
+  description: string
+  actionUrl: string
+  actionLabel: string
+  timestamp?: string
+}
 
 export default async function Home() {
-  const supabase = await createClient()
+  const supabase = createAdminClient()
+  const now = new Date()
 
-  // 1. Total Products
+  // 1. Total Products Count
   const { count: totalProducts } = await supabase
     .from('products')
     .select('*', { count: 'exact', head: true })
 
-  // 2. Open Anomalies
-  const { count: anomalyCount } = await supabase
-    .from('anomalies')
-    .select('*', { count: 'exact', head: true })
-    .eq('status', 'OPEN')
+  // 2. Open Anomalies Count & Data (via shared action using createAdminClient)
+  const { data: openAnomalies, count: anomalyCount } = await getOpenAnomalies()
 
-  // 3. Expiring Batches
-  const thirtyDaysFromNow = new Date()
-  thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30)
+  // 3. Total Reserved Stock across all products (from CREATED orders)
+  const { data: reservedItems } = await supabase
+    .from('order_items')
+    .select('qty, orders!inner(status)')
+    .eq('orders.status', 'CREATED')
 
-  const { data: expiring } = await supabase
+  const totalReservedQty = (reservedItems || []).reduce((sum, item) => sum + (item.qty || 0), 0)
+
+  // 4. Batches & Expiry Data (Up to 90 days out for attention list)
+  const ninetyDaysFromNow = new Date()
+  ninetyDaysFromNow.setDate(ninetyDaysFromNow.getDate() + 90)
+  const ninetyDaysStr = ninetyDaysFromNow.toISOString().split('T')[0]
+
+  const { data: expiringBatchesData } = await supabase
     .from('batches')
-    .select('id, batch_code, expiry_date, products(name, sku)')
-    .lte('expiry_date', thirtyDaysFromNow.toISOString())
-    .gte('expiry_date', new Date().toISOString())
+    .select('id, batch_code, expiry_date, product:products!batches_product_id_fkey(name, sku)')
+    .lte('expiry_date', ninetyDaysStr)
 
-  const expiringWithBalances = []
-  if (expiring && expiring.length > 0) {
-    const batchIds = expiring.map(b => b.id)
+  const processedExpiringBatches: any[] = []
+  if (expiringBatchesData && expiringBatchesData.length > 0) {
+    const batchIds = expiringBatchesData.map(b => b.id)
     const { data: balances } = await supabase
       .from('stock_balance_cache')
       .select('batch_id, qty')
       .in('batch_id', batchIds)
       .gt('qty', 0)
-    
+
     if (balances && balances.length > 0) {
       const balMap = new Map(balances.map(b => [b.batch_id, b.qty]))
-      for (const batch of expiring) {
-        if (balMap.has(batch.id)) {
-          expiringWithBalances.push({
-            ...batch,
-            qty: balMap.get(batch.id)
+      for (const b of expiringBatchesData) {
+        if (balMap.has(b.id)) {
+          const expDate = b.expiry_date ? new Date(b.expiry_date) : null
+          const daysRemaining = expDate ? Math.ceil((expDate.getTime() - now.getTime()) / (1000 * 3600 * 24)) : 999
+          const prod: any = Array.isArray(b.product) ? b.product[0] : b.product
+
+          processedExpiringBatches.push({
+            id: b.id,
+            batch_code: b.batch_code,
+            expiry_date: b.expiry_date,
+            daysRemaining,
+            product_name: prod?.name || 'Produk',
+            product_sku: prod?.sku || '',
+            qty: balMap.get(b.id)
           })
         }
       }
     }
   }
 
-  // 4. Pending Returns
-  const { data: pendingReturns } = await supabase
+  // Count only critical expiry (<= 30 days) for KPI Card
+  const criticalExpiryCount = processedExpiringBatches.filter(b => b.daysRemaining <= 30).length
+
+  // 5. Returns Data (Pending Inspection & TikTok 40-Day Claim Countdown)
+  const { data: returnsData, count: pendingReturnsCount } = await supabase
     .from('returns')
-    .select('id, created_at, orders(marketplace_order_id)')
-    .eq('status', 'PENDING_INSPECTION')
+    .select(`
+      id,
+      created_at,
+      status,
+      qty_requested,
+      orders!inner (
+        id,
+        marketplace_order_id,
+        channel,
+        status
+      ),
+      order_items (
+        product:products (name, sku)
+      )
+    `, { count: 'exact' })
     .order('created_at', { ascending: true })
-    .limit(5)
 
-  // 5. Stock Balances grouped by Product
-  const { data: allBalances } = await supabase
-    .from('stock_balance_cache')
-    .select('product_id, qty')
-  
-  const { data: allProducts } = await supabase
-    .from('products')
-    .select('id, name, sku')
+  const pendingReturnsList = (returnsData || []).filter(r => r.status === 'PENDING_INSPECTION')
 
-  const prodBalMap = new Map()
-  allBalances?.forEach(b => {
-    prodBalMap.set(b.product_id, (prodBalMap.get(b.product_id) || 0) + b.qty)
-  })
+  // 6. Assemble "Perlu Perhatian Hari Ini" (Unified Attention Items)
+  const attentionItems: AttentionItem[] = []
 
-  const stockSummary = (allProducts || []).map(p => ({
-    products: p,
-    total_qty: prodBalMap.get(p.id) || 0
-  }))
+  // a. Add Open Anomalies
+  if (openAnomalies) {
+    for (const a of openAnomalies) {
+      attentionItems.push({
+        id: `anomaly-${a.id}`,
+        category: 'ANOMALY',
+        severity: 'CRITICAL',
+        severityOrder: 1,
+        badgeLabel: 'Anomali',
+        title: `Anomali Stok: ${a.type}`,
+        description: a.description || 'Selisih atau kejanggalan stok terdeteksi di sistem.',
+        actionUrl: '/anomalies',
+        actionLabel: 'Buka Worklist Anomali',
+        timestamp: a.detected_at
+      })
+    }
+  }
+
+  // b. Add Expiring Batches
+  for (const b of processedExpiringBatches) {
+    const isCritical = b.daysRemaining <= 30
+    attentionItems.push({
+      id: `expiry-${b.id}`,
+      category: 'EXPIRY',
+      severity: isCritical ? 'CRITICAL' : 'WARNING',
+      severityOrder: isCritical ? 2 : 4,
+      badgeLabel: isCritical ? 'Kritis ≤30 Hari' : 'Perhatian ≤90 Hari',
+      title: `${b.product_name} (${b.product_sku}) — Batch ${b.batch_code}`,
+      description: `Sisa ${formatQty(b.qty)} unit · Tgl Kedaluwarsa: ${b.expiry_date} (${b.daysRemaining <= 0 ? 'Sudah Kedaluwarsa' : `${b.daysRemaining} hari lagi`})`,
+      actionUrl: '/products',
+      actionLabel: 'Lihat di Master Produk',
+      timestamp: b.expiry_date
+    })
+  }
+
+  // c. Add TikTok 40-Day Claim Countdown Returns
+  const tikTokReturns = (returnsData || []).filter(r => (r.orders as any)?.channel === 'TIKTOK')
+  for (const r of tikTokReturns) {
+    const orderInfo: any = r.orders
+    const createdAt = new Date(r.created_at)
+    
+    // Rule #6: TikTok 40-day claim countdown starts from created_at RETUR DIAJUKAN
+    const deadlineDate = new Date(createdAt.getTime() + 40 * 24 * 60 * 60 * 1000)
+    const daysLeft = Math.ceil((deadlineDate.getTime() - now.getTime()) / (1000 * 3600 * 24))
+
+    let severity: 'CRITICAL' | 'WARNING' | 'INFO' = 'INFO'
+    let severityOrder = 5
+    let badgeLabel = 'Klaim TikTok'
+
+    if (daysLeft <= 7) {
+      severity = 'CRITICAL'
+      severityOrder = 1
+      badgeLabel = 'Klaim TikTok (Mendesak)'
+    } else if (daysLeft <= 14) {
+      severity = 'WARNING'
+      severityOrder = 3
+      badgeLabel = 'Klaim TikTok'
+    }
+
+    const deadlineStr = deadlineDate.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })
+
+    attentionItems.push({
+      id: `tiktok-claim-${r.id}`,
+      category: 'TIKTOK_CLAIM',
+      severity,
+      severityOrder,
+      badgeLabel,
+      title: `Batas Klaim TikTok: ${orderInfo?.marketplace_order_id || 'Order TikTok'}`,
+      description: `Retur diajukan ${createdAt.toLocaleDateString('id-ID')} · Sisa ${daysLeft <= 0 ? '0' : daysLeft} hari batas klaim (Deadline: ${deadlineStr})`,
+      actionUrl: '/returns',
+      actionLabel: 'Buka Inbox Retur',
+      timestamp: r.created_at
+    })
+  }
+
+  // d. Add Pending Inspection Returns (avoiding duplicate if TikTok claim already listed)
+  for (const r of pendingReturnsList) {
+    const orderInfo: any = r.orders
+    const isTikTok = orderInfo?.channel === 'TIKTOK'
+    
+    // If it's TikTok and already included in claim countdown above, skip duplicating
+    if (isTikTok && tikTokReturns.some(t => t.id === r.id)) continue
+
+    const createdAt = new Date(r.created_at)
+    const ageDays = Math.floor((now.getTime() - createdAt.getTime()) / (1000 * 3600 * 24))
+    const isOverdue = ageDays >= 3
+
+    attentionItems.push({
+      id: `pending-return-${r.id}`,
+      category: 'PENDING_RETURN',
+      severity: isOverdue ? 'WARNING' : 'INFO',
+      severityOrder: isOverdue ? 3 : 5,
+      badgeLabel: isOverdue ? 'Perlu Diproses' : 'Retur Pending',
+      title: `Inspeksi Retur: ${orderInfo?.marketplace_order_id || 'Order'} (${orderInfo?.channel || 'MARKETPLACE'})`,
+      description: `Diajukan ${createdAt.toLocaleDateString('id-ID')} (${ageDays === 0 ? 'Hari ini' : `${ageDays} hari lalu`}) — Menunggu inspeksi gudang`,
+      actionUrl: '/returns',
+      actionLabel: 'Inspeksi Gudang',
+      timestamp: r.created_at
+    })
+  }
+
+  // Sort Attention Items by severityOrder ascending (CRITICAL -> WARNING -> INFO)
+  attentionItems.sort((a, b) => a.severityOrder - b.severityOrder)
+
+  // 7. Fetch Recent Ledger Movements (5-6 items)
+  const { data: recentMovements } = await supabase
+    .from('stock_ledger')
+    .select(`
+      id,
+      created_at,
+      qty_delta,
+      reason_code,
+      channel,
+      source_type,
+      source_ref_id,
+      product:products (id, name, sku),
+      batch:batches (id, batch_code)
+    `)
+    .order('created_at', { ascending: false })
+    .limit(6)
 
   return (
     <DashboardClient 
       totalProducts={totalProducts || 0}
       anomalyCount={anomalyCount || 0}
-      expiringBatches={expiringWithBalances}
-      pendingReturns={pendingReturns || []}
-      stockBalances={stockSummary}
+      totalReservedQty={totalReservedQty}
+      criticalExpiryCount={criticalExpiryCount}
+      pendingReturnsCount={pendingReturnsCount || 0}
+      attentionItems={attentionItems}
+      recentMovements={recentMovements || []}
     />
   )
 }

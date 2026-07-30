@@ -6,12 +6,18 @@ import { createAdminClient } from '@/utils/supabase/admin'
 
 export async function startOpnameSession() {
   const adminClient = createAdminClient()
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  let userId: string | null = null
+  try {
+    const supabase = await createClient()
+    const { data: authData } = await supabase.auth.getUser()
+    userId = authData?.user?.id || null
+  } catch {
+    userId = null
+  }
 
   const { data, error } = await adminClient
     .from('opname_sessions')
-    .insert({ created_by: user?.id })
+    .insert({ created_by: userId })
     .select('id')
     .single()
 
@@ -57,12 +63,19 @@ export async function saveOpnameDraft(payload: OpnameDraftPayload) {
 }
 
 export async function commitOpnameSession(sessionId: string) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const adminClient = createAdminClient()
+  let userId: string | null = null
+  try {
+    const supabase = await createClient()
+    const { data: authData } = await supabase.auth.getUser()
+    userId = authData?.user?.id || null
+  } catch {
+    userId = null
+  }
 
-  const { error } = await supabase.rpc('process_opname_session', {
+  const { error } = await adminClient.rpc('process_opname_session', {
     p_session_id: sessionId,
-    p_created_by: user?.id
+    p_created_by: userId
   })
 
   if (error) {

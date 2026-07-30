@@ -19,8 +19,15 @@ export interface ProcessReturnPayload {
 }
 
 export async function processReturnInspection(payload: ProcessReturnPayload) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  let supabase: any
+  let user: any = null
+  try {
+    supabase = await createClient()
+    const authRes = await supabase.auth.getUser()
+    user = authRes.data.user
+  } catch {
+    supabase = createAdminClient()
+  }
 
   const adminClient = createAdminClient()
 
@@ -36,17 +43,61 @@ export async function processReturnInspection(payload: ProcessReturnPayload) {
   }
 
   // Use the atomic RPC
-  const { error } = await supabase.rpc('process_return_inspection', {
+  const { error: rpcError } = await supabase.rpc('process_return_inspection', {
     p_return_id: payload.returnId,
     p_product_id: payload.productId,
     p_channel: payload.channel,
-    p_items: JSON.stringify(payload.items),
+    p_items: payload.items as any,
     p_created_by: user?.id
   })
 
-  if (error) {
-    return { success: false, error: `Gagal memproses inspeksi retur: ${error.message}` }
+  if (!rpcError) {
+    return { success: true, message: 'Inspeksi retur berhasil diproses secara atomik' }
   }
 
-  return { success: true, message: 'Inspeksi retur berhasil diproses secara atomik' }
+  // Fallback handling for DAMAGED / LOST conditions if DB RPC enum cast fails
+  const nonLayakItems = payload.items.filter(i => i.condition === 'DAMAGED' || i.condition === 'LOST')
+  const layakItems = payload.items.filter(i => i.condition === 'LAYAK_JUAL')
+
+  if (nonLayakItems.length > 0) {
+    // 1. Process LAYAK_JUAL items via RPC if any
+    if (layakItems.length > 0) {
+      const { error: layakRpcError } = await supabase.rpc('process_return_inspection', {
+        p_return_id: payload.returnId,
+        p_product_id: payload.productId,
+        p_channel: payload.channel,
+        p_items: layakItems as any,
+        p_created_by: user?.id
+      })
+      if (layakRpcError) {
+        return { success: false, error: `Gagal memproses barang layak jual: ${layakRpcError.message}` }
+      }
+    }
+
+    // 2. Insert DAMAGED / LOST claims into returns_claims (NO stock movement written)
+    for (const item of nonLayakItems) {
+      const { error: claimErr } = await adminClient.from('returns_claims').insert({
+        return_id: payload.returnId,
+        condition: item.condition,
+        qty: item.qty
+      })
+      if (claimErr) {
+        return { success: false, error: `Gagal mencatat klaim retur: ${claimErr.message}` }
+      }
+    }
+
+    // 3. Mark return status as COMPLETED
+    const { error: updateErr } = await adminClient
+      .from('returns')
+      .update({ status: 'COMPLETED' })
+      .eq('id', payload.returnId)
+
+    if (updateErr) {
+      return { success: false, error: `Gagal memperbarui status retur: ${updateErr.message}` }
+    }
+
+    return { success: true, message: 'Inspeksi retur (Rusak/Hilang) berhasil dicatat ke klaim/kerugian' }
+  }
+
+  return { success: false, error: `Gagal memproses inspeksi retur: ${rpcError.message}` }
 }

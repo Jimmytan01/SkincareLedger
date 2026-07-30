@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/utils/supabase/client'
 import { commitOpnameSession } from '@/actions/opname'
 import { CheckCircle2, AlertTriangle, ArrowRight, ArrowLeft, ClipboardCheck, Activity, Info } from 'lucide-react'
+import { formatQty } from '@/utils/format'
 
 export default function OpnameReviewPage({ params }: { params: Promise<{ id: string }> }) {
   const resolvedParams = use(params)
@@ -69,7 +70,7 @@ export default function OpnameReviewPage({ params }: { params: Promise<{ id: str
             </button>
           )}
           <h1 className="text-3xl font-bold tracking-tight text-slate-900 flex items-center gap-2">
-            <ClipboardCheck className="text-honey-500" /> Review Selisih Opname
+            <ClipboardCheck className="text-jade-600" /> Review Selisih Opname
           </h1>
           <p className="text-slate-500 mt-2 flex items-center gap-1.5 font-mono text-sm">
             ID Sesi: <span className="bg-slate-100 px-2 py-0.5 rounded border border-slate-200">{sessionId.split('-')[0]}</span>
@@ -148,10 +149,10 @@ export default function OpnameReviewPage({ params }: { params: Promise<{ id: str
                         <tr key={item.id} className={isSurplus ? 'bg-jade-50/30' : 'bg-brick-50/30'}>
                           <td className="px-6 py-4 font-mono text-xs text-slate-500">{item.products?.sku}</td>
                           <td className="px-6 py-4 font-medium text-slate-900">{item.products?.name}</td>
-                          <td className="px-6 py-4 text-right font-mono text-slate-500">{item.system_qty}</td>
-                          <td className="px-6 py-4 text-right font-mono text-slate-900 font-bold">{item.physical_qty}</td>
+                          <td className="px-6 py-4 text-right font-mono text-slate-500">{formatQty(item.system_qty)}</td>
+                          <td className="px-6 py-4 text-right font-mono text-slate-900 font-bold">{formatQty(item.physical_qty)}</td>
                           <td className={`px-6 py-4 text-right font-mono font-bold text-base ${isSurplus ? 'text-jade-600' : 'text-brick-600'}`}>
-                            {isSurplus ? '+' : ''}{item.difference}
+                            {isSurplus ? `+${formatQty(item.difference)}` : formatQty(item.difference)}
                           </td>
                           <td className="px-6 py-4">
                             <div className="flex items-start gap-2 text-xs">

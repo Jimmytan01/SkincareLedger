@@ -94,8 +94,8 @@ export default function OpnameListPage() {
                           <CheckCircle2 size={14} /> Selesai
                         </div>
                       ) : (
-                        <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-honey-50 text-honey-700 text-xs font-semibold">
-                          <Activity size={14} className="animate-pulse" /> Sedang Berjalan
+                        <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-100 text-slate-700 text-xs font-semibold">
+                          <Activity size={14} className="animate-spin text-slate-500" /> Sedang Berlangsung
                         </div>
                       )}
                     </td>
@@ -106,7 +106,7 @@ export default function OpnameListPage() {
                       {s.status === 'IN_PROGRESS' ? (
                         <button 
                           onClick={() => router.push(`/opname/${s.id}`)}
-                          className="px-3 py-1.5 bg-honey-100 text-honey-700 hover:bg-honey-200 rounded-lg text-sm font-semibold transition-colors flex items-center gap-1.5"
+                          className="px-3 py-1.5 bg-slate-100 text-slate-700 hover:bg-slate-200 rounded-lg text-sm font-semibold transition-colors flex items-center gap-1.5"
                         >
                           Lanjutkan <ArrowRight size={16} />
                         </button>

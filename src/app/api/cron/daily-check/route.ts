@@ -68,6 +68,36 @@ export async function GET(request: Request) {
     })
   }
 
+  // 3. NEGATIVE_BALANCE_DETECTED: Check for batches with negative stock
+  const { data: negativeBalances } = await adminClient
+    .from('stock_balance_cache')
+    .select('batch_id, product_id, qty, products(name, sku)')
+    .lt('qty', 0)
+
+  if (negativeBalances && negativeBalances.length > 0) {
+    // Prevent creating duplicate anomalies for the same batch if one is already OPEN
+    const { data: existingAnomalies } = await adminClient
+      .from('anomalies')
+      .select('related_ids')
+      .eq('type', 'NEGATIVE_BALANCE_DETECTED')
+      .eq('status', 'OPEN')
+      
+    const existingBatchIds = new Set(
+      existingAnomalies?.map(a => (a.related_ids as any)?.batch_id).filter(Boolean) || []
+    )
+
+    negativeBalances.forEach(balance => {
+      if (!existingBatchIds.has(balance.batch_id)) {
+        anomaliesToInsert.push({
+          type: 'NEGATIVE_BALANCE_DETECTED',
+          description: `Stok produk ${(balance.products as any)?.name} (${(balance.products as any)?.sku}) pada batch ${balance.batch_id} bernilai negatif (${balance.qty}).`,
+          related_ids: { batch_id: balance.batch_id, product_id: balance.product_id },
+          status: 'OPEN'
+        })
+      }
+    })
+  }
+
   // Save all anomalies
   if (anomaliesToInsert.length > 0) {
     const { error } = await adminClient.from('anomalies').insert(anomaliesToInsert)

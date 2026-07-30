@@ -7,20 +7,28 @@ export default function SimulationPage() {
     <div className="space-y-6 animate-in fade-in duration-500">
       <header>
         <h1 className="text-3xl font-bold tracking-tight text-slate-900 flex items-center gap-2">
-          <Webhook className="text-jade-500" /> Playground Integrasi
+          <Webhook className="text-jade-500" /> Simulasi Sistem
         </h1>
-        <p className="text-slate-500 mt-2">Simulasikan webhook dari Shopee dan TikTok untuk menguji ketahanan Order State Machine dan algoritma FEFO.</p>
+        <p className="text-slate-500 mt-2">Simulasikan kejadian pesanan dari Shopee dan TikTok untuk menguji alur reservasi stok dan algoritma FEFO.</p>
       </header>
 
-      <div className="bg-honey-50 border border-honey-200 rounded-xl p-4 flex gap-3 text-honey-800 text-sm">
-        <Info className="shrink-0 mt-0.5 text-honey-600" size={18} />
-        <div>
-          <p className="font-semibold mb-1">Cara Kerja Order State Machine</p>
-          <ul className="list-disc list-inside space-y-1 text-honey-700">
-            <li><strong>ORDER_CREATED</strong>: Sistem akan mereservasi stok dan pesanan terdaftar di aplikasi.</li>
-            <li><strong>STATUS_UPDATED (SHIPPED/IN_TRANSIT)</strong>: Stok akan resmi dipotong dari Ledger dan reservasi dihapus.</li>
-            <li><strong>CANCELLED</strong>: Jika sebelum dikirim, reservasi dihapus. Jika setelah dikirim, Ledger direversal.</li>
-            <li><strong>RETURN_REQUESTED</strong>: Retur masuk ke Inbox Gudang untuk diinspeksi.</li>
+      <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex gap-3 text-slate-800 text-sm">
+        <Info className="shrink-0 mt-0.5 text-slate-500" size={18} />
+        <div className="space-y-1 leading-relaxed">
+          <p className="font-semibold">Informasi Alur Pengujian Injeksi Marketplace Event:</p>
+          <ul className="list-disc list-inside space-y-1.5 text-slate-600">
+            <li>
+              <strong>Pesanan Dibuat</strong> <span className="text-xs font-mono opacity-75 font-normal">(ORDER_CREATED)</span>: Sistem menyisihkan stok untuk pesanan ini, tapi belum mengurangi stok asli.
+            </li>
+            <li>
+              <strong>Barang Dikirim / Dalam Perjalanan</strong> <span className="text-xs font-mono opacity-75 font-normal">(STATUS_UPDATED: SHIPPED / IN_TRANSIT)</span>: Stok resmi berkurang dan tercatat di Buku Besar.
+            </li>
+            <li>
+              <strong>Dibatalkan</strong> <span className="text-xs font-mono opacity-75 font-normal">(CANCELLED)</span>: Kalau dibatalkan sebelum dikirim, penyisihan stok dilepas. Kalau dibatalkan setelah dikirim, stok yang sudah berkurang dikembalikan.
+            </li>
+            <li>
+              <strong>Retur Diajukan</strong> <span className="text-xs font-mono opacity-75 font-normal">(RETURN_REQUESTED)</span>: Barang masuk ke Inbox Retur untuk diperiksa gudang.
+            </li>
           </ul>
         </div>
       </div>
