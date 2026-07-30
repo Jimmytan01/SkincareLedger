@@ -1,4 +1,4 @@
-# Sistem Rekonsiliasi Stok Skincare (Fase 2)
+# Sistem Rekonsiliasi Stok Skincare
 
 Aplikasi manajemen dan rekonsiliasi stok skincare berbasis **Stock Ledger Append-Only** sebagai *Single Source of Truth* (SSOT). Didesain untuk menutup 5 kebocoran stok utama: pesanan batal tanpa pengembalian, penanganan retur yang membingungkan, sampel/bonus keluar tidak tercatat, estimasi stok awal, serta kesalahan input manual admin.
 
@@ -24,7 +24,6 @@ Aplikasi manajemen dan rekonsiliasi stok skincare berbasis **Stock Ledger Append
    - Proteksi rute penuh via Supabase Auth + Edge Middleware (akses tanpa login otomatis ditolak 307 ke `/login`).
    - Ledger Explorer menggunakan Server-Side Pagination yang responsif walau memproses ribuan data.
 
----
 ---
 
 ## 🎮 Panduan Menjalankan Simulasi Marketplace
