@@ -35,8 +35,8 @@ export default async function Home() {
     returnsRes,
     recentMovementsRes
   ] = await Promise.all([
-    // 1. Total Products Count
-    supabase.from('products').select('*', { count: 'exact', head: true }),
+    // 1. Total Products Count (using indexed 'id' projection for fast head count)
+    supabase.from('products').select('id', { count: 'exact', head: true }),
 
     // 2. Open Anomalies Count & Data
     getOpenAnomalies(),

@@ -38,7 +38,7 @@ function LedgerContent() {
   // Master Lists for Filter Dropdowns
   const [allProducts, setAllProducts] = useState<any[]>([])
   const [productBatches, setProductBatches] = useState<any[]>([])
-  
+
   // Filters
   const [filterProduct, setFilterProduct] = useState(urlProductId || '')
   const [filterBatch, setFilterBatch] = useState(urlBatchId || '')
@@ -142,7 +142,7 @@ function LedgerContent() {
     query = query.range(from, to)
 
     const { data, count } = await query
-    
+
     if (data && data.length > 0) {
       setLedger(data)
       const rowIds = data.map((r: any) => r.id)
@@ -175,7 +175,7 @@ function LedgerContent() {
   const handleExportCSV = async () => {
     try {
       setExporting(true)
-      
+
       let matchingProdIds: string[] = []
       let matchingBatchIds: string[] = []
 
@@ -283,7 +283,7 @@ function LedgerContent() {
     }
 
     const { data } = await query
-    
+
     if (data) setDrilldownData(data)
     setDrilldownLoading(false)
   }
@@ -350,7 +350,7 @@ function LedgerContent() {
         <h1 className="text-3xl font-bold tracking-tight text-slate-900 flex items-center gap-2">
           <BookOpen className="text-jade-500" /> Buku Besar (Ledger)
         </h1>
-        <p className="text-slate-500 mt-2">Pusat kebenaran (*Single Source of Truth*) mutasi stok gudang Anda.</p>
+        <p className="text-slate-500 mt-2">Pusat kebenaran (Single Source of Truth) mutasi stok gudang Anda.</p>
       </header>
 
       {(urlProductId || urlBatchId || urlRefId) && (
@@ -376,7 +376,7 @@ function LedgerContent() {
             <span>Cari (Produk/Batch/Ref)</span>
             <div className="relative">
               <Search size={14} className="absolute left-2.5 top-2.5 text-slate-400" />
-              <input 
+              <input
                 type="text"
                 placeholder="Kata kunci..."
                 value={filterSearch}
@@ -389,12 +389,12 @@ function LedgerContent() {
           {/* 2. Product Filter */}
           <label className="flex flex-col gap-1 text-xs font-semibold text-slate-700">
             <span>Produk</span>
-            <select 
-              value={filterProduct} 
-              onChange={(e) => { 
-                setFilterProduct(e.target.value); 
-                setFilterBatch(''); 
-                setPage(1); 
+            <select
+              value={filterProduct}
+              onChange={(e) => {
+                setFilterProduct(e.target.value);
+                setFilterBatch('');
+                setPage(1);
               }}
               className="w-full px-2.5 py-1.5 border border-slate-300 rounded-lg text-xs bg-slate-50 focus:ring-2 focus:ring-jade-500 focus:outline-none"
             >
@@ -411,9 +411,9 @@ function LedgerContent() {
               <span>Batch</span>
               {!filterProduct && <span className="text-[10px] font-normal text-amber-600">Pilih produk dulu</span>}
             </span>
-            <select 
+            <select
               disabled={!filterProduct}
-              value={filterBatch} 
+              value={filterBatch}
               onChange={(e) => { setFilterBatch(e.target.value); setPage(1); }}
               className="w-full px-2.5 py-1.5 border border-slate-300 rounded-lg text-xs bg-slate-50 focus:ring-2 focus:ring-jade-500 focus:outline-none disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed"
             >
@@ -427,8 +427,8 @@ function LedgerContent() {
           {/* 4. Reason Filter */}
           <label className="flex flex-col gap-1 text-xs font-semibold text-slate-700">
             <span>Alasan Mutasi</span>
-            <select 
-              value={filterReason} 
+            <select
+              value={filterReason}
               onChange={(e) => { setFilterReason(e.target.value); setPage(1); }}
               className="w-full px-2.5 py-1.5 border border-slate-300 rounded-lg text-xs bg-slate-50 focus:ring-2 focus:ring-jade-500 focus:outline-none"
             >
@@ -451,8 +451,8 @@ function LedgerContent() {
           {/* 5. Channel Filter */}
           <label className="flex flex-col gap-1 text-xs font-semibold text-slate-700">
             <span>Kanal</span>
-            <select 
-              value={filterChannel} 
+            <select
+              value={filterChannel}
               onChange={(e) => { setFilterChannel(e.target.value); setPage(1); }}
               className="w-full px-2.5 py-1.5 border border-slate-300 rounded-lg text-xs bg-slate-50 focus:ring-2 focus:ring-jade-500 focus:outline-none"
             >
@@ -467,7 +467,7 @@ function LedgerContent() {
           {/* 6. Date From */}
           <label className="flex flex-col gap-1 text-xs font-semibold text-slate-700">
             <span>Dari Tanggal</span>
-            <input 
+            <input
               type="date"
               value={filterDateFrom}
               onChange={(e) => { setFilterDateFrom(e.target.value); setPage(1); }}
@@ -478,7 +478,7 @@ function LedgerContent() {
           {/* 7. Date To */}
           <label className="flex flex-col gap-1 text-xs font-semibold text-slate-700">
             <span>Sampai Tanggal</span>
-            <input 
+            <input
               type="date"
               value={filterDateTo}
               onChange={(e) => { setFilterDateTo(e.target.value); setPage(1); }}
@@ -534,7 +534,7 @@ function LedgerContent() {
             )}
 
             {hasActiveFilters && (
-              <button 
+              <button
                 onClick={resetAllFilters}
                 className="inline-flex items-center gap-1 px-2.5 py-1 bg-brick-50 hover:bg-brick-100 text-brick-700 border border-brick-200 rounded-md text-xs font-semibold transition-colors"
               >
@@ -547,7 +547,7 @@ function LedgerContent() {
             <div className="text-xs text-slate-500 font-mono bg-slate-100 px-2.5 py-1 rounded-md border border-slate-200">
               Total Baris: {totalCount}
             </div>
-            <button 
+            <button
               onClick={handleExportCSV}
               disabled={exporting}
               className="inline-flex items-center gap-1.5 px-3 py-1 bg-jade-600 hover:bg-jade-700 disabled:bg-slate-300 text-white rounded-md text-xs font-semibold transition-colors shadow-2xs"
@@ -594,7 +594,7 @@ function LedgerContent() {
                       </p>
                       {hasActiveFilters && (
                         <div className="pt-2">
-                          <button 
+                          <button
                             onClick={resetAllFilters}
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-jade-600 hover:bg-jade-700 text-white rounded-lg text-xs font-semibold shadow-soft transition-colors"
                           >
@@ -607,12 +607,11 @@ function LedgerContent() {
                 </tr>
               ) : (
                 ledger.map(row => (
-                  <tr 
-                    key={row.id} 
-                    className={`hover:bg-slate-50 transition-colors ${
-                      row.reason_code === 'MANUAL_CORRECTION' ? 'bg-amber-50/40' : 
-                      row.reason_code === 'OPNAME_CORRECTION' ? 'bg-jade-50/30' : ''
-                    }`}
+                  <tr
+                    key={row.id}
+                    className={`hover:bg-slate-50 transition-colors ${row.reason_code === 'MANUAL_CORRECTION' ? 'bg-amber-50/40' :
+                        row.reason_code === 'OPNAME_CORRECTION' ? 'bg-jade-50/30' : ''
+                      }`}
                   >
                     <td className="px-3.5 py-2.5 font-mono text-xs whitespace-nowrap">{new Date(row.created_at).toLocaleString('id-ID')}</td>
                     <td className="px-3.5 py-2.5 max-w-[200px]">
@@ -624,9 +623,8 @@ function LedgerContent() {
                       {row.qty_delta > 0 ? `+${formatQty(row.qty_delta)}` : formatQty(row.qty_delta)}
                     </td>
                     <td className="px-3.5 py-2.5 whitespace-nowrap">
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold ${
-                        row.qty_delta < 0 ? 'bg-brick-50 text-brick-700' : 'bg-jade-50 text-jade-700'
-                      }`}>
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold ${row.qty_delta < 0 ? 'bg-brick-50 text-brick-700' : 'bg-jade-50 text-jade-700'
+                        }`}>
                         {translateReason(row.reason_code)}
                       </span>
                     </td>
@@ -635,7 +633,7 @@ function LedgerContent() {
                     </td>
                     <td className="px-3.5 py-2.5 whitespace-nowrap">
                       {row.source_ref_id ? (
-                        <button 
+                        <button
                           onClick={() => openDrilldown(row.source_ref_id)}
                           className="inline-flex items-center gap-1 text-xs text-dusty-700 hover:text-jade-700 bg-slate-100 hover:bg-slate-200 px-2 py-0.5 rounded font-mono border border-slate-200 transition-colors"
                           title={`ID Referensi Penuh: ${row.source_ref_id} (Klik untuk melihat rincian)`}
@@ -650,7 +648,7 @@ function LedgerContent() {
                     <td className="px-3.5 py-2.5 text-right whitespace-nowrap">
                       {row.qty_delta < 0 && row.reason_code !== 'CANCEL_REVERSAL' && row.reason_code !== 'MANUAL_CORRECTION' && (
                         correctedMap[row.id] ? (
-                          <button 
+                          <button
                             onClick={() => openDrilldown(row.id)}
                             className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-medium border border-slate-200 transition-colors shadow-2xs"
                             title="Entri ini sudah dikoreksi. Klik untuk melihat rincian koreksinya."
@@ -659,7 +657,7 @@ function LedgerContent() {
                             <span>Sudah Dikoreksi</span>
                           </button>
                         ) : (
-                          <button 
+                          <button
                             onClick={() => {
                               setCorrectingRow(row)
                               setCorrectionIdempKey(`CORRECTION-${row.id}-${Date.now()}`)
@@ -684,14 +682,14 @@ function LedgerContent() {
             Halaman <span className="font-mono font-medium text-slate-900">{page}</span> dari <span className="font-mono font-medium text-slate-900">{totalPages || 1}</span>
           </p>
           <div className="flex gap-2">
-            <button 
+            <button
               disabled={page <= 1}
               onClick={() => setPage(p => p - 1)}
               className="p-2 border border-slate-300 bg-white text-slate-600 rounded-lg hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <ChevronLeft size={18} />
             </button>
-            <button 
+            <button
               disabled={page >= totalPages}
               onClick={() => setPage(p => p + 1)}
               className="p-2 border border-slate-300 bg-white text-slate-600 rounded-lg hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -713,7 +711,7 @@ function LedgerContent() {
                 </h2>
                 <p className="text-xs font-mono text-slate-500 mt-1">Ref ID: {drilldownRef}</p>
               </div>
-              <button 
+              <button
                 onClick={() => {
                   setDrilldownRef(null)
                   setDrilldownData([])
@@ -723,7 +721,7 @@ function LedgerContent() {
                 Tutup
               </button>
             </div>
-            
+
             <div className="p-0 overflow-y-auto flex-1">
               {drilldownLoading ? (
                 <div className="p-12 text-center text-slate-400">Memuat rincian grup...</div>
@@ -769,10 +767,10 @@ function LedgerContent() {
                 <AlertCircle className="text-honey-500" /> Koreksi Pengeluaran
               </h2>
               <p className="text-sm text-slate-600 mb-6">
-                Anda akan mengembalikan stok <strong>{formatQty(Math.abs(correctingRow.qty_delta))} unit</strong> ke batch <span className="font-mono text-xs bg-slate-100 px-1 py-0.5 rounded border border-slate-200">{correctingRow.batches?.batch_code}</span>. 
+                Anda akan mengembalikan stok <strong>{formatQty(Math.abs(correctingRow.qty_delta))} unit</strong> ke batch <span className="font-mono text-xs bg-slate-100 px-1 py-0.5 rounded border border-slate-200">{correctingRow.batches?.batch_code}</span>.
                 Sistem akan mencatatnya sebagai mutasi baru dengan alasan "Koreksi Manual".
               </p>
-              
+
               {correctionError && (
                 <div className="mb-4 p-3 bg-brick-50 text-brick-600 border border-brick-200 rounded-lg text-sm">
                   {correctionError}
@@ -781,9 +779,9 @@ function LedgerContent() {
 
               <label className="flex flex-col gap-2 text-sm font-medium text-slate-700">
                 Alasan Koreksi (Wajib)
-                <textarea 
-                  value={correctionNote} 
-                  onChange={e => setCorrectionNote(e.target.value)} 
+                <textarea
+                  value={correctionNote}
+                  onChange={e => setCorrectionNote(e.target.value)}
                   required
                   rows={3}
                   className="border border-slate-300 rounded-lg p-3 bg-white focus:ring-2 focus:ring-jade-500 focus:outline-none resize-none font-normal"
@@ -792,15 +790,15 @@ function LedgerContent() {
               </label>
 
               <div className="flex gap-3 mt-8">
-                <button 
-                  onClick={() => setCorrectingRow(null)} 
+                <button
+                  onClick={() => setCorrectingRow(null)}
                   className="flex-1 px-4 py-2.5 bg-slate-100 text-slate-700 hover:bg-slate-200 rounded-xl font-semibold transition-colors"
                 >
                   Batal
                 </button>
-                <button 
-                  onClick={handleCorrectionSubmit} 
-                  disabled={correctionLoading} 
+                <button
+                  onClick={handleCorrectionSubmit}
+                  disabled={correctionLoading}
                   className="flex-1 px-4 py-2.5 bg-honey-500 hover:bg-honey-600 text-white rounded-xl font-semibold transition-colors flex justify-center items-center gap-2"
                 >
                   {correctionLoading ? <Activity className="animate-spin" size={18} /> : <ArrowRightLeft size={18} />}
