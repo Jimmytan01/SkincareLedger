@@ -4,7 +4,7 @@ import { useState, useEffect, use } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/utils/supabase/client'
 import { commitOpnameSession } from '@/actions/opname'
-import { CheckCircle2, AlertTriangle, ArrowRight, ArrowLeft, ClipboardCheck, Activity, Info } from 'lucide-react'
+import { CheckCircle2, AlertTriangle, ArrowRight, ArrowLeft, ClipboardCheck, Activity, Info, ChevronLeft } from 'lucide-react'
 import { formatQty } from '@/utils/format'
 
 export default function OpnameReviewPage({ params }: { params: Promise<{ id: string }> }) {
@@ -61,14 +61,25 @@ export default function OpnameReviewPage({ params }: { params: Promise<{ id: str
     <div className="space-y-6 animate-in fade-in duration-500 max-w-5xl mx-auto">
       <header className="flex flex-col md:flex-row md:items-end justify-between gap-4">
         <div>
-          {sessionInfo?.status !== 'COMPLETED' && !success && (
+          <div className="flex items-center gap-3 mb-2">
             <button 
-              onClick={() => router.push(`/opname/${sessionId}`)}
-              className="text-dusty-600 hover:text-jade-600 font-medium text-sm flex items-center gap-1 mb-2 transition-colors"
+              onClick={() => router.push('/opname')}
+              className="text-dusty-600 hover:text-jade-600 font-medium text-sm flex items-center gap-1 transition-colors"
             >
-              <ArrowLeft size={16} /> Kembali ke Form Input
+              <ChevronLeft size={16} /> Kembali ke Daftar Sesi
             </button>
-          )}
+            {sessionInfo?.status !== 'COMPLETED' && !success && (
+              <>
+                <span className="text-slate-300">|</span>
+                <button 
+                  onClick={() => router.push(`/opname/${sessionId}`)}
+                  className="text-dusty-600 hover:text-jade-600 font-medium text-sm flex items-center gap-1 transition-colors"
+                >
+                  <ArrowLeft size={16} /> Edit Form Input
+                </button>
+              </>
+            )}
+          </div>
           <h1 className="text-3xl font-bold tracking-tight text-slate-900 flex items-center gap-2">
             <ClipboardCheck className="text-jade-600" /> Review Selisih Opname
           </h1>

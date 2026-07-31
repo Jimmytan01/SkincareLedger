@@ -22,32 +22,75 @@ export default async function Home() {
   const supabase = createAdminClient()
   const now = new Date()
 
-  // 1. Total Products Count
-  const { count: totalProducts } = await supabase
-    .from('products')
-    .select('*', { count: 'exact', head: true })
-
-  // 2. Open Anomalies Count & Data (via shared action using createAdminClient)
-  const { data: openAnomalies, count: anomalyCount } = await getOpenAnomalies()
-
-  // 3. Total Reserved Stock across all products (from CREATED orders)
-  const { data: reservedItems } = await supabase
-    .from('order_items')
-    .select('qty, orders!inner(status)')
-    .eq('orders.status', 'CREATED')
-
-  const totalReservedQty = (reservedItems || []).reduce((sum, item) => sum + (item.qty || 0), 0)
-
-  // 4. Batches & Expiry Data (Up to 90 days out for attention list)
   const ninetyDaysFromNow = new Date()
   ninetyDaysFromNow.setDate(ninetyDaysFromNow.getDate() + 90)
   const ninetyDaysStr = ninetyDaysFromNow.toISOString().split('T')[0]
 
-  const { data: expiringBatchesData } = await supabase
-    .from('batches')
-    .select('id, batch_code, expiry_date, product:products!batches_product_id_fkey(name, sku)')
-    .lte('expiry_date', ninetyDaysStr)
+  // Execute independent dashboard queries concurrently in parallel (Promise.all)
+  const [
+    totalProductsRes,
+    anomaliesRes,
+    reservedItemsRes,
+    expiringBatchesRes,
+    returnsRes,
+    recentMovementsRes
+  ] = await Promise.all([
+    // 1. Total Products Count
+    supabase.from('products').select('*', { count: 'exact', head: true }),
 
+    // 2. Open Anomalies Count & Data
+    getOpenAnomalies(),
+
+    // 3. Total Reserved Stock across all products (from CREATED orders)
+    supabase.from('order_items').select('qty, orders!inner(status)').eq('orders.status', 'CREATED'),
+
+    // 4. Batches & Expiry Data (Up to 90 days out for attention list)
+    supabase.from('batches').select('id, batch_code, expiry_date, product:products!batches_product_id_fkey(name, sku)').lte('expiry_date', ninetyDaysStr),
+
+    // 5. Returns Data (Pending Inspection & TikTok 40-Day Claim Countdown)
+    supabase.from('returns').select(`
+      id,
+      created_at,
+      status,
+      qty_requested,
+      orders!inner (
+        id,
+        marketplace_order_id,
+        channel,
+        status
+      ),
+      order_items (
+        product:products (name, sku)
+      )
+    `, { count: 'exact' }).order('created_at', { ascending: true }),
+
+    // 6. Recent Ledger Movements (5-6 items)
+    supabase.from('stock_ledger').select(`
+      id,
+      created_at,
+      qty_delta,
+      reason_code,
+      channel,
+      source_type,
+      source_ref_id,
+      product:products (id, name, sku),
+      batch:batches (id, batch_code)
+    `).order('created_at', { ascending: false }).limit(6)
+  ])
+
+  // Extract parallel results
+  const totalProducts = totalProductsRes.count
+  const { data: openAnomalies, count: anomalyCount } = anomaliesRes
+  const reservedItems = reservedItemsRes.data
+  const expiringBatchesData = expiringBatchesRes.data
+  const returnsData = returnsRes.data
+  const pendingReturnsCount = returnsRes.count
+  const recentMovements = recentMovementsRes.data
+
+  // Calculate Total Reserved Qty
+  const totalReservedQty = (reservedItems || []).reduce((sum, item) => sum + (item.qty || 0), 0)
+
+  // Process Expiring Batches Balances
   const processedExpiringBatches: any[] = []
   if (expiringBatchesData && expiringBatchesData.length > 0) {
     const batchIds = expiringBatchesData.map(b => b.id)
@@ -81,26 +124,6 @@ export default async function Home() {
 
   // Count only critical expiry (<= 30 days) for KPI Card
   const criticalExpiryCount = processedExpiringBatches.filter(b => b.daysRemaining <= 30).length
-
-  // 5. Returns Data (Pending Inspection & TikTok 40-Day Claim Countdown)
-  const { data: returnsData, count: pendingReturnsCount } = await supabase
-    .from('returns')
-    .select(`
-      id,
-      created_at,
-      status,
-      qty_requested,
-      orders!inner (
-        id,
-        marketplace_order_id,
-        channel,
-        status
-      ),
-      order_items (
-        product:products (name, sku)
-      )
-    `, { count: 'exact' })
-    .order('created_at', { ascending: true })
 
   const pendingReturnsList = (returnsData || []).filter(r => r.status === 'PENDING_INSPECTION')
 
@@ -210,23 +233,6 @@ export default async function Home() {
 
   // Sort Attention Items by severityOrder ascending (CRITICAL -> WARNING -> INFO)
   attentionItems.sort((a, b) => a.severityOrder - b.severityOrder)
-
-  // 7. Fetch Recent Ledger Movements (5-6 items)
-  const { data: recentMovements } = await supabase
-    .from('stock_ledger')
-    .select(`
-      id,
-      created_at,
-      qty_delta,
-      reason_code,
-      channel,
-      source_type,
-      source_ref_id,
-      product:products (id, name, sku),
-      batch:batches (id, batch_code)
-    `)
-    .order('created_at', { ascending: false })
-    .limit(6)
 
   return (
     <DashboardClient 
