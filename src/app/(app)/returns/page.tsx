@@ -1,10 +1,10 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/utils/supabase/client'
 import { processReturnInspection, ProcessReturnPayload } from '@/actions/returns'
-import { Undo2, AlertCircle, Activity, CheckCircle2, PackageSearch, X, Plus, Info, History, ExternalLink } from 'lucide-react'
+import { Undo2, AlertCircle, Activity, CheckCircle2, PackageSearch, X, Plus, Info, History, ExternalLink, Search, Filter } from 'lucide-react'
 import ChannelBadge from '@/components/ChannelBadge'
 import { formatQty } from '@/utils/format'
 
@@ -15,6 +15,13 @@ export default function ReturnsInboxPage() {
   const [pendingReturns, setPendingReturns] = useState<any[]>([])
   const [completedReturns, setCompletedReturns] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+
+  // Filters for Riwayat Inspeksi tab
+  const [filterChannel, setFilterChannel] = useState('')
+  const [filterCondition, setFilterCondition] = useState('')
+  const [filterDateFrom, setFilterDateFrom] = useState('')
+  const [filterDateTo, setFilterDateTo] = useState('')
+  const [filterSearch, setFilterSearch] = useState('')
 
   const [inspectingRet, setInspectingRet] = useState<any>(null)
   const [splits, setSplits] = useState<{ condition: any, qty: number, expiryDate: string, isUnknownExpiry: boolean }[]>([])
@@ -85,6 +92,71 @@ export default function ReturnsInboxPage() {
   useEffect(() => {
     fetchReturns()
   }, [fetchReturns])
+
+  const filteredCompletedReturns = useMemo(() => {
+    return completedReturns.filter(ret => {
+      // 1. Kanal Filter
+      if (filterChannel && ret.orders?.channel !== filterChannel) {
+        return false
+      }
+
+      // 2. Kondisi Hasil Filter
+      if (filterCondition) {
+        const hasLayak = (ret.ledger_entries || []).length > 0
+        const claims = ret.returns_claims || []
+        const hasDamaged = claims.some((c: any) => c.condition === 'DAMAGED')
+        const hasLost = claims.some((c: any) => c.condition === 'LOST')
+
+        if (filterCondition === 'LAYAK_JUAL' && !hasLayak) return false
+        if (filterCondition === 'DAMAGED' && !hasDamaged) return false
+        if (filterCondition === 'LOST' && !hasLost) return false
+      }
+
+      // 3. Rentang Tanggal Inspeksi Filter (Asia/Jakarta WIB)
+      const ledger = ret.ledger_entries || []
+      const claims = ret.returns_claims || []
+      let inspectDateISO = ret.created_at
+      if (ledger.length > 0 && ledger[0].created_at) {
+        inspectDateISO = ledger[0].created_at
+      } else if (claims.length > 0 && claims[0].created_at) {
+        inspectDateISO = claims[0].created_at
+      }
+
+      const inspectDateWIB = new Date(inspectDateISO).toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' })
+
+      if (filterDateFrom && inspectDateWIB < filterDateFrom) {
+        return false
+      }
+      if (filterDateTo && inspectDateWIB > filterDateTo) {
+        return false
+      }
+
+      // 4. Cari Search (Order ID / Produk / SKU / Bundle SKU)
+      if (filterSearch && filterSearch.trim() !== '') {
+        const term = filterSearch.trim().toLowerCase()
+        const orderId = (ret.orders?.marketplace_order_id || '').toLowerCase()
+        const prodName = (ret.order_items?.products?.name || '').toLowerCase()
+        const prodSku = (ret.order_items?.products?.sku || '').toLowerCase()
+        const bundleSku = (ret.order_items?.bundle_sku || '').toLowerCase()
+
+        if (!orderId.includes(term) && !prodName.includes(term) && !prodSku.includes(term) && !bundleSku.includes(term)) {
+          return false
+        }
+      }
+
+      return true
+    })
+  }, [completedReturns, filterChannel, filterCondition, filterDateFrom, filterDateTo, filterSearch])
+
+  const hasActiveFilters = Boolean(filterChannel || filterCondition || filterDateFrom || filterDateTo || filterSearch)
+
+  const resetAllFilters = () => {
+    setFilterChannel('')
+    setFilterCondition('')
+    setFilterDateFrom('')
+    setFilterDateTo('')
+    setFilterSearch('')
+  }
 
   const openInspection = (ret: any) => {
     setInspectingRet(ret)
@@ -176,10 +248,134 @@ export default function ReturnsInboxPage() {
           <span className={`px-2 py-0.5 rounded-full text-xs font-mono font-bold ${
             tab === 'COMPLETED' ? 'bg-jade-100 text-jade-700' : 'bg-slate-100 text-slate-600'
           }`}>
-            {counts.completed}
+            {hasActiveFilters ? filteredCompletedReturns.length : counts.completed}
           </span>
         </button>
       </div>
+
+      {/* Filter Bar for Riwayat Inspeksi */}
+      {tab === 'COMPLETED' && (
+        <div className="bg-white rounded-xl shadow-soft border border-slate-200 p-4 space-y-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 items-end">
+            {/* 1. Search */}
+            <label className="flex flex-col gap-1 text-xs font-semibold text-slate-700">
+              <span>Cari (Order ID/Produk)</span>
+              <div className="relative">
+                <Search size={14} className="absolute left-2.5 top-2.5 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Order ID / Produk..."
+                  value={filterSearch}
+                  onChange={(e) => setFilterSearch(e.target.value)}
+                  className="w-full pl-8 pr-3 py-1.5 border border-slate-300 rounded-lg text-xs bg-slate-50 focus:ring-2 focus:ring-jade-500 focus:outline-none"
+                />
+              </div>
+            </label>
+
+            {/* 2. Kanal Dropdown */}
+            <label className="flex flex-col gap-1 text-xs font-semibold text-slate-700">
+              <span>Kanal</span>
+              <select
+                value={filterChannel}
+                onChange={(e) => setFilterChannel(e.target.value)}
+                className="w-full px-2.5 py-1.5 border border-slate-300 rounded-lg text-xs bg-slate-50 focus:ring-2 focus:ring-jade-500 focus:outline-none"
+              >
+                <option value="">Semua Kanal</option>
+                <option value="SHOPEE">Shopee</option>
+                <option value="TIKTOK">TikTok</option>
+                <option value="OFFLINE">Offline</option>
+                <option value="INTERNAL">Internal</option>
+              </select>
+            </label>
+
+            {/* 3. Kondisi Hasil Dropdown */}
+            <label className="flex flex-col gap-1 text-xs font-semibold text-slate-700">
+              <span>Kondisi Hasil</span>
+              <select
+                value={filterCondition}
+                onChange={(e) => setFilterCondition(e.target.value)}
+                className="w-full px-2.5 py-1.5 border border-slate-300 rounded-lg text-xs bg-slate-50 focus:ring-2 focus:ring-jade-500 focus:outline-none"
+              >
+                <option value="">Semua Kondisi</option>
+                <option value="LAYAK_JUAL">Layak Jual</option>
+                <option value="DAMAGED">Rusak</option>
+                <option value="LOST">Hilang</option>
+              </select>
+            </label>
+
+            {/* 4. Dari Tanggal Inspeksi */}
+            <label className="flex flex-col gap-1 text-xs font-semibold text-slate-700">
+              <span>Dari Tanggal Inspeksi</span>
+              <input
+                type="date"
+                value={filterDateFrom}
+                onChange={(e) => setFilterDateFrom(e.target.value)}
+                className="w-full px-2.5 py-1.5 border border-slate-300 rounded-lg text-xs bg-slate-50 focus:ring-2 focus:ring-jade-500 focus:outline-none"
+              />
+            </label>
+
+            {/* 5. Sampai Tanggal Inspeksi */}
+            <label className="flex flex-col gap-1 text-xs font-semibold text-slate-700">
+              <span>Sampai Tanggal Inspeksi</span>
+              <input
+                type="date"
+                value={filterDateTo}
+                onChange={(e) => setFilterDateTo(e.target.value)}
+                className="w-full px-2.5 py-1.5 border border-slate-300 rounded-lg text-xs bg-slate-50 focus:ring-2 focus:ring-jade-500 focus:outline-none"
+              />
+            </label>
+          </div>
+
+          {/* Active Filter Chips & Reset Button */}
+          {hasActiveFilters && (
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100">
+              <div className="flex flex-wrap items-center gap-1.5">
+                {filterSearch && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-slate-100 text-slate-700 border border-slate-200 rounded-md text-xs font-medium">
+                    <span>Cari: "{filterSearch}"</span>
+                    <button onClick={() => setFilterSearch('')} className="hover:text-brick-600"><X size={12} /></button>
+                  </span>
+                )}
+                {filterChannel && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-50 text-blue-800 border border-blue-200 rounded-md text-xs font-medium">
+                    <span>Kanal: {filterChannel}</span>
+                    <button onClick={() => setFilterChannel('')} className="hover:text-brick-600"><X size={12} /></button>
+                  </span>
+                )}
+                {filterCondition && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-jade-50 text-jade-800 border border-jade-200 rounded-md text-xs font-medium">
+                    <span>Kondisi: {filterCondition === 'LAYAK_JUAL' ? 'Layak Jual' : filterCondition === 'DAMAGED' ? 'Rusak' : 'Hilang'}</span>
+                    <button onClick={() => setFilterCondition('')} className="hover:text-brick-600"><X size={12} /></button>
+                  </span>
+                )}
+                {filterDateFrom && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-slate-100 text-slate-700 border border-slate-200 rounded-md text-xs font-medium">
+                    <span>Dari: {filterDateFrom}</span>
+                    <button onClick={() => setFilterDateFrom('')} className="hover:text-brick-600"><X size={12} /></button>
+                  </span>
+                )}
+                {filterDateTo && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-slate-100 text-slate-700 border border-slate-200 rounded-md text-xs font-medium">
+                    <span>Sampai: {filterDateTo}</span>
+                    <button onClick={() => setFilterDateTo('')} className="hover:text-brick-600"><X size={12} /></button>
+                  </span>
+                )}
+
+                <button
+                  onClick={resetAllFilters}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 bg-brick-50 hover:bg-brick-100 text-brick-700 border border-brick-200 rounded-md text-xs font-semibold transition-colors"
+                >
+                  <X size={12} /> Reset Semua Filter
+                </button>
+              </div>
+
+              <div className="text-xs text-slate-500 font-mono bg-slate-100 px-2.5 py-1 rounded-md border border-slate-200">
+                Hasil Filter: {filteredCompletedReturns.length} Baris
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="bg-white rounded-xl shadow-soft border border-slate-200 overflow-hidden">
         {tab === 'PENDING' ? (
@@ -288,8 +484,23 @@ export default function ReturnsInboxPage() {
                   <tr>
                     <td colSpan={7} className="px-5 py-12 text-center text-slate-400">Belum ada riwayat retur yang diinspeksi.</td>
                   </tr>
+                ) : filteredCompletedReturns.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="px-5 py-12 text-center text-slate-500 space-y-2">
+                      <p className="font-semibold text-slate-700">Tidak ada riwayat retur yang cocok dengan kombinasi filter.</p>
+                      <p className="text-xs text-slate-400">Coba ubah kata kunci pencarian, pilihan kanal, kondisi, atau rentang tanggal.</p>
+                      {hasActiveFilters && (
+                        <button
+                          onClick={resetAllFilters}
+                          className="mt-2 inline-flex items-center gap-1 px-3 py-1.5 bg-brick-50 hover:bg-brick-100 text-brick-700 border border-brick-200 rounded-lg text-xs font-semibold transition-colors"
+                        >
+                          <X size={14} /> Reset Semua Filter
+                        </button>
+                      )}
+                    </td>
+                  </tr>
                 ) : (
-                  completedReturns.map(ret => {
+                  filteredCompletedReturns.map(ret => {
                     const createdAt = new Date(ret.created_at)
                     const claims = ret.returns_claims || []
                     const ledger = ret.ledger_entries || []

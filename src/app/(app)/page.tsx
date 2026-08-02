@@ -2,6 +2,7 @@ import { createAdminClient } from '@/utils/supabase/admin'
 import DashboardClient from '@/components/DashboardClient'
 import { formatQty } from '@/utils/format'
 import { getOpenAnomalies } from '@/actions/anomalies'
+import { getAnomalyMeta } from '@/utils/anomalyMeta'
 
 export const dynamic = 'force-dynamic'
 
@@ -26,6 +27,8 @@ export default async function Home() {
   ninetyDaysFromNow.setDate(ninetyDaysFromNow.getDate() + 90)
   const ninetyDaysStr = ninetyDaysFromNow.toISOString().split('T')[0]
 
+  const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString()
+
   // Execute independent dashboard queries concurrently in parallel (Promise.all)
   const [
     totalProductsRes,
@@ -33,7 +36,8 @@ export default async function Home() {
     reservedItemsRes,
     expiringBatchesRes,
     returnsRes,
-    recentMovementsRes
+    recentMovementsRes,
+    trendLedgerRes
   ] = await Promise.all([
     // 1. Total Products Count (using indexed 'id' projection for fast head count)
     supabase.from('products').select('id', { count: 'exact', head: true }),
@@ -47,7 +51,7 @@ export default async function Home() {
     // 4. Batches & Expiry Data (Up to 90 days out for attention list)
     supabase.from('batches').select('id, batch_code, expiry_date, product:products!batches_product_id_fkey(name, sku)').lte('expiry_date', ninetyDaysStr),
 
-    // 5. Returns Data (Pending Inspection & TikTok 40-Day Claim Countdown)
+    // 5. Returns Data (Pending Inspection ONLY & TikTok 40-Day Claim Countdown)
     supabase.from('returns').select(`
       id,
       created_at,
@@ -62,7 +66,7 @@ export default async function Home() {
       order_items (
         product:products (name, sku)
       )
-    `, { count: 'exact' }).order('created_at', { ascending: true }),
+    `, { count: 'exact' }).eq('status', 'PENDING_INSPECTION').order('created_at', { ascending: true }),
 
     // 6. Recent Ledger Movements (5-6 items)
     supabase.from('stock_ledger').select(`
@@ -75,7 +79,10 @@ export default async function Home() {
       source_ref_id,
       product:products (id, name, sku),
       batch:batches (id, batch_code)
-    `).order('created_at', { ascending: false }).limit(6)
+    `).order('created_at', { ascending: false }).limit(6),
+
+    // 7. 30-Day Stock Movement Trend Query (Filtered by indexed created_at timestamp)
+    supabase.from('stock_ledger').select('created_at, qty_delta, reason_code').gte('created_at', thirtyDaysAgo)
   ])
 
   // Extract parallel results
@@ -86,6 +93,33 @@ export default async function Home() {
   const returnsData = returnsRes.data
   const pendingReturnsCount = returnsRes.count
   const recentMovements = recentMovementsRes.data
+  const trendLedgerData = trendLedgerRes.data
+
+  // Process 30-Day Trend Chart Data (Asia/Jakarta WIB)
+  const trendMap = new Map<string, { date: string; displayDate: string; stockIn: number; stockOut: number }>()
+
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date(now.getTime() - i * 24 * 60 * 60 * 1000)
+    const dateStr = d.toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' })
+    const displayDate = d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', timeZone: 'Asia/Jakarta' })
+    trendMap.set(dateStr, { date: dateStr, displayDate, stockIn: 0, stockOut: 0 })
+  }
+
+  trendLedgerData?.forEach(row => {
+    const rowDate = new Date(row.created_at)
+    const dateKey = rowDate.toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' })
+    const entry = trendMap.get(dateKey)
+    if (entry) {
+      const delta = Number(row.qty_delta) || 0
+      if (row.reason_code === 'SALE' || delta < 0) {
+        entry.stockOut += Math.abs(delta)
+      } else if (['OPENING_BALANCE', 'RETURN_IN', 'STOCK_IN'].includes(row.reason_code) || delta > 0) {
+        entry.stockIn += Math.abs(delta)
+      }
+    }
+  })
+
+  const stockTrendData = Array.from(trendMap.values())
 
   // Calculate Total Reserved Qty
   const totalReservedQty = (reservedItems || []).reduce((sum, item) => sum + (item.qty || 0), 0)
@@ -133,13 +167,14 @@ export default async function Home() {
   // a. Add Open Anomalies
   if (openAnomalies) {
     for (const a of openAnomalies) {
+      const meta = getAnomalyMeta(a.type)
       attentionItems.push({
         id: `anomaly-${a.id}`,
         category: 'ANOMALY',
         severity: 'CRITICAL',
         severityOrder: 1,
         badgeLabel: 'Anomali',
-        title: `Anomali Stok: ${a.type}`,
+        title: meta.label,
         description: a.description || 'Selisih atau kejanggalan stok terdeteksi di sistem.',
         actionUrl: '/anomalies',
         actionLabel: 'Buka Worklist Anomali',
@@ -243,6 +278,7 @@ export default async function Home() {
       pendingReturnsCount={pendingReturnsCount || 0}
       attentionItems={attentionItems}
       recentMovements={recentMovements || []}
+      stockTrendData={stockTrendData}
     />
   )
 }

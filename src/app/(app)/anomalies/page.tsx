@@ -1,11 +1,12 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/utils/supabase/client'
 import { resolveAnomaly, resolveAnomaliesBulk } from '@/actions/anomalies'
 import ChannelBadge from '@/components/ChannelBadge'
 import { formatQty } from '@/utils/format'
+import { getAnomalyMeta } from '@/utils/anomalyMeta'
 import { 
   AlertTriangle, 
   CheckCircle2, 
@@ -19,7 +20,8 @@ import {
   Inbox,
   Tag,
   CheckSquare,
-  ListChecks
+  ListChecks,
+  Search
 } from 'lucide-react'
 
 export default function AnomaliesPage() {
@@ -27,6 +29,12 @@ export default function AnomaliesPage() {
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<'OPEN' | 'RESOLVED'>('OPEN')
   const [counts, setCounts] = useState({ open: 0, resolved: 0 })
+
+  // Filters for Selesai tab
+  const [filterType, setFilterType] = useState('')
+  const [filterDateFrom, setFilterDateFrom] = useState('')
+  const [filterDateTo, setFilterDateTo] = useState('')
+  const [filterSearch, setFilterSearch] = useState('')
 
   const [productsMap, setProductsMap] = useState<Map<string, any>>(new Map())
   const [ordersMap, setOrdersMap] = useState<Map<string, any>>(new Map())
@@ -176,40 +184,57 @@ export default function AnomaliesPage() {
     }
   }
 
-  const getAnomalyMeta = (type: string) => {
-    const map: Record<string, { label: string; bg: string; text: string; border: string }> = {
-      NEGATIVE_BALANCE_ATTEMPT: {
-        label: 'Percobaan Transaksi Ditolak (Stok Kurang)',
-        bg: 'bg-brick-50',
-        text: 'text-brick-700',
-        border: 'border-brick-200'
-      },
-      NEGATIVE_BALANCE_DETECTED: {
-        label: 'Saldo Batch Negatif Terdeteksi',
-        bg: 'bg-brick-50',
-        text: 'text-brick-700',
-        border: 'border-brick-200'
-      },
-      STALE_ORDER: {
-        label: 'Pesanan Menggantung (>3 Hari)',
-        bg: 'bg-honey-50',
-        text: 'text-honey-800',
-        border: 'border-honey-200'
-      },
-      MISSING_LEDGER: {
-        label: 'Order Diproses Tanpa Pencatatan Ledger',
-        bg: 'bg-brick-50',
-        text: 'text-brick-700',
-        border: 'border-brick-200'
-      }
-    }
 
-    return map[type] || {
-      label: type.replace(/_/g, ' '),
-      bg: 'bg-slate-100',
-      text: 'text-slate-700',
-      border: 'border-slate-200'
-    }
+
+  // Memoized Filtered Anomalies for Selesai tab
+  const filteredAnomalies = useMemo(() => {
+    if (filter === 'OPEN') return anomalies
+
+    return anomalies.filter(a => {
+      // 1. Tipe Anomali Filter
+      if (filterType && a.type !== filterType) {
+        return false
+      }
+
+      // 2. Rentang Tanggal Filter (Waktu Deteksi: detected_at in WIB)
+      if (filterDateFrom || filterDateTo) {
+        const detectedWIB = new Date(a.detected_at).toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' })
+        if (filterDateFrom && detectedWIB < filterDateFrom) return false
+        if (filterDateTo && detectedWIB > filterDateTo) return false
+      }
+
+      // 3. Cari (Order ID / Produk / SKU / Catatan Penyelesaian / Deskripsi)
+      if (filterSearch && filterSearch.trim() !== '') {
+        const term = filterSearch.trim().toLowerCase()
+        const product = a.related_ids?.product_id ? productsMap.get(a.related_ids.product_id) : null
+        const order = a.related_ids?.order_id ? ordersMap.get(a.related_ids.order_id) : null
+
+        const orderId = (order?.marketplace_order_id || '').toLowerCase()
+        const prodName = (product?.name || '').toLowerCase()
+        const prodSku = (product?.sku || '').toLowerCase()
+        const resNote = (a.resolution_note || '').toLowerCase()
+        const description = (a.description || '').toLowerCase()
+
+        const matches = orderId.includes(term) ||
+                        prodName.includes(term) ||
+                        prodSku.includes(term) ||
+                        resNote.includes(term) ||
+                        description.includes(term)
+
+        if (!matches) return false
+      }
+
+      return true
+    })
+  }, [anomalies, filter, filterType, filterDateFrom, filterDateTo, filterSearch, productsMap, ordersMap])
+
+  const hasActiveFilters = Boolean(filter === 'RESOLVED' && (filterType || filterDateFrom || filterDateTo || filterSearch))
+
+  const resetAllFilters = () => {
+    setFilterType('')
+    setFilterDateFrom('')
+    setFilterDateTo('')
+    setFilterSearch('')
   }
 
   return (
@@ -253,10 +278,113 @@ export default function AnomaliesPage() {
           <span className={`px-2 py-0.5 rounded-full text-xs font-mono font-bold ${
             filter === 'RESOLVED' ? 'bg-jade-100 text-jade-700' : 'bg-slate-100 text-slate-600'
           }`}>
-            {counts.resolved}
+            {hasActiveFilters ? filteredAnomalies.length : counts.resolved}
           </span>
         </button>
       </div>
+
+      {/* Filter Bar for Selesai Tab */}
+      {filter === 'RESOLVED' && (
+        <div className="bg-white rounded-xl shadow-soft border border-slate-200 p-4 space-y-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 items-end">
+            {/* 1. Search (Order ID / Produk / Catatan Penyelesaian) */}
+            <label className="flex flex-col gap-1 text-xs font-semibold text-slate-700">
+              <span>Cari (Order/Produk/Catatan)</span>
+              <div className="relative">
+                <Search size={14} className="absolute left-2.5 top-2.5 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Order ID, Produk, Catatan..."
+                  value={filterSearch}
+                  onChange={(e) => setFilterSearch(e.target.value)}
+                  className="w-full pl-8 pr-3 py-1.5 border border-slate-300 rounded-lg text-xs bg-slate-50 focus:ring-2 focus:ring-jade-500 focus:outline-none"
+                />
+              </div>
+            </label>
+
+            {/* 2. Tipe Anomali Dropdown */}
+            <label className="flex flex-col gap-1 text-xs font-semibold text-slate-700">
+              <span>Tipe Anomali</span>
+              <select
+                value={filterType}
+                onChange={(e) => setFilterType(e.target.value)}
+                className="w-full px-2.5 py-1.5 border border-slate-300 rounded-lg text-xs bg-slate-50 focus:ring-2 focus:ring-jade-500 focus:outline-none"
+              >
+                <option value="">Semua Tipe Anomali</option>
+                <option value="NEGATIVE_BALANCE_ATTEMPT">{getAnomalyMeta('NEGATIVE_BALANCE_ATTEMPT').label}</option>
+                <option value="STALE_ORDER">{getAnomalyMeta('STALE_ORDER').label}</option>
+                <option value="MISSING_LEDGER">{getAnomalyMeta('MISSING_LEDGER').label}</option>
+                <option value="NEGATIVE_BALANCE_DETECTED">{getAnomalyMeta('NEGATIVE_BALANCE_DETECTED').label}</option>
+              </select>
+            </label>
+
+            {/* 3. Dari Tanggal Deteksi */}
+            <label className="flex flex-col gap-1 text-xs font-semibold text-slate-700">
+              <span>Dari Tanggal Deteksi</span>
+              <input
+                type="date"
+                value={filterDateFrom}
+                onChange={(e) => setFilterDateFrom(e.target.value)}
+                className="w-full px-2.5 py-1.5 border border-slate-300 rounded-lg text-xs bg-slate-50 focus:ring-2 focus:ring-jade-500 focus:outline-none"
+              />
+            </label>
+
+            {/* 4. Sampai Tanggal Deteksi */}
+            <label className="flex flex-col gap-1 text-xs font-semibold text-slate-700">
+              <span>Sampai Tanggal Deteksi</span>
+              <input
+                type="date"
+                value={filterDateTo}
+                onChange={(e) => setFilterDateTo(e.target.value)}
+                className="w-full px-2.5 py-1.5 border border-slate-300 rounded-lg text-xs bg-slate-50 focus:ring-2 focus:ring-jade-500 focus:outline-none"
+              />
+            </label>
+          </div>
+
+          {/* Active Filter Chips & Reset Button */}
+          {hasActiveFilters && (
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100">
+              <div className="flex flex-wrap items-center gap-1.5">
+                {filterSearch && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-slate-100 text-slate-700 border border-slate-200 rounded-md text-xs font-medium">
+                    <span>Cari: "{filterSearch}"</span>
+                    <button onClick={() => setFilterSearch('')} className="hover:text-brick-600"><X size={12} /></button>
+                  </span>
+                )}
+                {filterType && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-50 text-amber-800 border border-amber-200 rounded-md text-xs font-medium">
+                    <span>Tipe: {getAnomalyMeta(filterType).label}</span>
+                    <button onClick={() => setFilterType('')} className="hover:text-brick-600"><X size={12} /></button>
+                  </span>
+                )}
+                {filterDateFrom && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-slate-100 text-slate-700 border border-slate-200 rounded-md text-xs font-medium">
+                    <span>Dari: {filterDateFrom}</span>
+                    <button onClick={() => setFilterDateFrom('')} className="hover:text-brick-600"><X size={12} /></button>
+                  </span>
+                )}
+                {filterDateTo && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-slate-100 text-slate-700 border border-slate-200 rounded-md text-xs font-medium">
+                    <span>Sampai: {filterDateTo}</span>
+                    <button onClick={() => setFilterDateTo('')} className="hover:text-brick-600"><X size={12} /></button>
+                  </span>
+                )}
+
+                <button
+                  onClick={resetAllFilters}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 bg-brick-50 hover:bg-brick-100 text-brick-700 border border-brick-200 rounded-md text-xs font-semibold transition-colors"
+                >
+                  <X size={12} /> Reset Semua Filter
+                </button>
+              </div>
+
+              <div className="text-xs text-slate-500 font-mono bg-slate-100 px-2.5 py-1 rounded-md border border-slate-200">
+                Hasil Filter: {filteredAnomalies.length} Baris
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Table Section */}
       <div className="bg-white rounded-xl shadow-soft border border-slate-200 overflow-hidden">
@@ -298,8 +426,23 @@ export default function AnomaliesPage() {
                     Tidak ada anomali berstatus <strong className="text-slate-600">{filter === 'OPEN' ? 'Terbuka' : 'Selesai'}</strong>.
                   </td>
                 </tr>
+              ) : filteredAnomalies.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="px-5 py-12 text-center text-slate-500 space-y-2">
+                    <p className="font-semibold text-slate-700">Tidak ada anomali selesai yang cocok dengan kombinasi filter.</p>
+                    <p className="text-xs text-slate-400">Coba ubah kata kunci pencarian, pilihan tipe anomali, atau rentang tanggal.</p>
+                    {hasActiveFilters && (
+                      <button
+                        onClick={resetAllFilters}
+                        className="mt-2 inline-flex items-center gap-1 px-3 py-1.5 bg-brick-50 hover:bg-brick-100 text-brick-700 border border-brick-200 rounded-lg text-xs font-semibold transition-colors"
+                      >
+                        <X size={14} /> Reset Semua Filter
+                      </button>
+                    )}
+                  </td>
+                </tr>
               ) : (
-                anomalies.map(a => {
+                filteredAnomalies.map(a => {
                   const meta = getAnomalyMeta(a.type)
                   const product = a.related_ids?.product_id ? productsMap.get(a.related_ids.product_id) : null
                   const order = a.related_ids?.order_id ? ordersMap.get(a.related_ids.order_id) : null

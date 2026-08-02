@@ -6,6 +6,8 @@ import { formatQty } from '@/utils/format'
 import { AttentionItem } from '@/app/(app)/page'
 import ChannelBadge from '@/components/ChannelBadge'
 
+import StockTrendChart, { StockTrendDay } from '@/components/StockTrendChart'
+
 interface DashboardClientProps {
   totalProducts: number
   anomalyCount: number
@@ -14,6 +16,7 @@ interface DashboardClientProps {
   pendingReturnsCount: number
   attentionItems: AttentionItem[]
   recentMovements: any[]
+  stockTrendData: StockTrendDay[]
 }
 
 export default function DashboardClient({
@@ -23,7 +26,8 @@ export default function DashboardClient({
   criticalExpiryCount,
   pendingReturnsCount,
   attentionItems,
-  recentMovements
+  recentMovements,
+  stockTrendData
 }: DashboardClientProps) {
 
   const getSeverityStyle = (severity: 'CRITICAL' | 'WARNING' | 'INFO') => {
@@ -290,6 +294,9 @@ export default function DashboardClient({
         </div>
 
       </div>
+
+      {/* 3. 30-Day Stock Movement Trend Card (Bottom Position) */}
+      <StockTrendChart data={stockTrendData} />
     </div>
   )
 }

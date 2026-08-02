@@ -68,20 +68,48 @@ async function handleOrderCreated(supabase: any, event: MarketplaceEvent) {
 
   if (orderError) throw new Error(`Gagal membuat order: ${orderError.message}`)
 
-  // For each item, resolve whether it's a bundle or single product
-  for (const item of event.items) {
-    const { data: recipes } = await supabase
-      .from('bundle_recipes')
-      .select('version, component_product_id, qty')
-      .eq('bundle_sku', item.sku)
-      .order('version', { ascending: false })
+  // Batch fetch bundle recipes and products for all SKUs in event.items in parallel
+  const itemSkus = Array.from(new Set(event.items.map(i => i.sku)))
 
+  const [recipesRes, productsRes] = await Promise.all([
+    supabase
+      .from('bundle_recipes')
+      .select('bundle_sku, version, component_product_id, qty')
+      .in('bundle_sku', itemSkus)
+      .order('version', { ascending: false }),
+    supabase
+      .from('products')
+      .select('id, sku')
+      .in('sku', itemSkus)
+  ])
+
+  if (recipesRes.error) throw new Error(`Gagal mengambil resep bundle: ${recipesRes.error.message}`)
+  if (productsRes.error) throw new Error(`Gagal mengambil data produk: ${productsRes.error.message}`)
+
+  // Group recipes by bundle_sku in memory
+  const recipesMap = new Map<string, any[]>()
+  recipesRes.data?.forEach((r: any) => {
+    if (!recipesMap.has(r.bundle_sku)) recipesMap.set(r.bundle_sku, [])
+    recipesMap.get(r.bundle_sku)!.push(r)
+  })
+
+  // Map single products by sku in memory
+  const productsMap = new Map<string, any>()
+  productsRes.data?.forEach((p: any) => {
+    productsMap.set(p.sku, p)
+  })
+
+  const orderItemsToInsert: any[] = []
+
+  for (const item of event.items) {
+    const recipes = recipesMap.get(item.sku)
     if (recipes && recipes.length > 0) {
+      // Top version is the latest active version at creation time (recipes query is ordered by version DESC)
       const currentVersion = recipes[0].version
       const activeComponents = recipes.filter((r: any) => r.version === currentVersion)
 
       for (const comp of activeComponents) {
-        await supabase.from('order_items').insert({
+        orderItemsToInsert.push({
           order_id: order.id,
           product_id: comp.component_product_id,
           qty: comp.qty * item.qty,
@@ -91,17 +119,12 @@ async function handleOrderCreated(supabase: any, event: MarketplaceEvent) {
         })
       }
     } else {
-      const { data: product, error: productError } = await supabase
-        .from('products')
-        .select('id')
-        .eq('sku', item.sku)
-        .single()
-      
-      if (productError || !product) {
-        throw new Error(`SKU '${item.sku}' tidak ditemukan di master produk`)
+      const product = productsMap.get(item.sku)
+      if (!product) {
+        throw new Error(`SKU '${item.sku}' tidak ditemukan di master produk / bundle`)
       }
 
-      await supabase.from('order_items').insert({
+      orderItemsToInsert.push({
         order_id: order.id,
         product_id: product.id,
         qty: item.qty,
@@ -110,6 +133,11 @@ async function handleOrderCreated(supabase: any, event: MarketplaceEvent) {
         bundle_order_qty: null
       })
     }
+  }
+
+  if (orderItemsToInsert.length > 0) {
+    const { error: itemsError } = await supabase.from('order_items').insert(orderItemsToInsert)
+    if (itemsError) throw new Error(`Gagal menyimpan item order: ${itemsError.message}`)
   }
 
   return { success: true, message: 'Pesanan baru dibuat dan stok berhasil di-reservasi' }
@@ -206,13 +234,23 @@ async function handleReturnRequested(supabase: any, event: MarketplaceEvent) {
   const { data: orderItems } = await supabase.from('order_items').select('*').eq('order_id', order.id)
   if (!orderItems || orderItems.length === 0) throw new Error(`Tidak ada item terdaftar pada order '${event.order_id}'`)
 
+  // Batch fetch products for all return SKUs and existing returns for order.id
+  const retSkus = Array.from(new Set(event.items.map(i => i.sku)))
+  const [prodsRes, existingRetRes] = await Promise.all([
+    supabase.from('products').select('id, sku').in('sku', retSkus),
+    supabase.from('returns').select('order_item_id').eq('order_id', order.id).eq('status', 'PENDING_INSPECTION')
+  ])
+
+  const prodMap = new Map((prodsRes.data || []).map((p: any) => [p.sku, p.id]))
+  const pendingOrderItemSet = new Set((existingRetRes.data || []).map((r: any) => r.order_item_id))
+
   const returnInserts = []
 
   for (const retItem of event.items) {
-    const { data: prod } = await supabase.from('products').select('id').eq('sku', retItem.sku).single()
+    const prodId = prodMap.get(retItem.sku)
     
     let matchedItems = orderItems.filter((oi: any) => 
-      oi.bundle_sku === retItem.sku || (!oi.bundle_sku && oi.product_id === prod?.id)
+      oi.bundle_sku === retItem.sku || (!oi.bundle_sku && oi.product_id === prodId)
     )
 
     if (matchedItems.length === 0) {
@@ -220,16 +258,7 @@ async function handleReturnRequested(supabase: any, event: MarketplaceEvent) {
     }
 
     for (const oi of matchedItems) {
-      // Idempotency check: check if a pending return for this specific order_item_id already exists!
-      const { data: existingRet } = await supabase
-        .from('returns')
-        .select('id')
-        .eq('order_id', order.id)
-        .eq('order_item_id', oi.id)
-        .eq('status', 'PENDING_INSPECTION')
-        .limit(1)
-
-      if (existingRet && existingRet.length > 0) {
+      if (pendingOrderItemSet.has(oi.id)) {
         // Idempotent: Return inspection for this item already pending
         continue
       }
