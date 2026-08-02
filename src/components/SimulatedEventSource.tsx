@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react'
 import { MarketplaceEvent } from '@/types/marketplace'
 import { processMarketplaceEvent, getProductsAndBundlesForSimulation, getSimulationOrders } from '@/actions/marketplace'
-import { Send, Terminal, CheckCircle2, ServerCrash, Activity, Info, RefreshCw, Lock } from 'lucide-react'
+import { Send, Terminal, CheckCircle2, ServerCrash, Activity, Info, RefreshCw, Lock, PlusCircle, Trash2, AlertCircle } from 'lucide-react'
 
 interface OrderItemOption {
   id: string
@@ -43,6 +43,10 @@ export default function SimulatedEventSource() {
     qty: 1
   }))
 
+  const [orderItems, setOrderItems] = useState<{ sku: string; qty: number }[]>([
+    { sku: '', qty: 1 }
+  ])
+
   const loadDropdownData = async () => {
     setFetchingData(true)
     try {
@@ -53,8 +57,14 @@ export default function SimulatedEventSource() {
       setProductOptions(prods)
       setExistingOrders(ords)
 
-      if (prods.length > 0 && !eventData.sku) {
+      if (prods.length > 0) {
         setEventData(prev => ({ ...prev, sku: prods[0].sku }))
+        setOrderItems(prev => {
+          if (!prev[0]?.sku) {
+            return [{ sku: prods[0].sku, qty: 1 }]
+          }
+          return prev
+        })
       }
     } catch (err) {
       console.error('Error loading simulation dropdown data:', err)
@@ -72,18 +82,38 @@ export default function SimulatedEventSource() {
   const isStatusUpdated = eventData.event_type === 'STATUS_UPDATED'
   const isItemScopedEvent = eventData.event_type === 'CANCELLED' || eventData.event_type === 'RETURN_REQUESTED'
 
+  // Helper to filter valid orders per Event Type
+  const getValidOrdersForEventType = (orders: ExistingOrder[], eventType: string) => {
+    return orders.filter(o => {
+      // Rule 0: Exclude orders that are already CANCELLED or DELIVERED from follow-up event type dropdowns
+      if (o.status === 'CANCELLED' || o.status === 'DELIVERED') return false
+
+      if (eventType === 'STATUS_UPDATED') {
+        // Poin 1: Barang Dikirim (STATUS_UPDATED) HANYA order berstatus CREATED
+        return o.status === 'CREATED'
+      }
+
+      if (eventType === 'DELIVERED') {
+        // Poin 4: Selesai Diterima (DELIVERED) HANYA order berstatus SHIPPED_IN_TRANSIT (sudah dikirim)
+        return o.status === 'SHIPPED_IN_TRANSIT' || o.status === 'SHIPPED' || o.status === 'IN_TRANSIT'
+      }
+
+      if (eventType === 'RETURN_REQUESTED') {
+        // Poin 2: Retur Diajukan (RETURN_REQUESTED) HANYA order berstatus SHIPPED_IN_TRANSIT & sisaKuota > 0
+        return (o.status === 'SHIPPED_IN_TRANSIT' || o.status === 'SHIPPED' || o.status === 'IN_TRANSIT') && o.items.some(item => item.sisaKuota > 0)
+      }
+
+      if (eventType === 'CANCELLED') {
+        // Poin 3: Dibatalkan (CANCELLED) order berstatus CREATED maupun SHIPPED_IN_TRANSIT & sisaKuota > 0
+        return (o.status === 'CREATED' || o.status === 'SHIPPED_IN_TRANSIT' || o.status === 'SHIPPED' || o.status === 'IN_TRANSIT') && o.items.some(item => item.sisaKuota > 0)
+      }
+
+      return true
+    })
+  }
+
   // Filter orders available for selection based on Event Type
-  const validExistingOrders = existingOrders.filter(o => {
-    if (isItemScopedEvent) {
-      // Exclude whole-cancelled orders or orders where all items have sisaKuota = 0
-      return o.status !== 'CANCELLED' && o.items.some(item => item.sisaKuota > 0)
-    }
-    if (isStatusUpdated) {
-      // Exclude already cancelled or already shipped orders
-      return o.status === 'CREATED'
-    }
-    return true
-  })
+  const validExistingOrders = getValidOrdersForEventType(existingOrders, eventData.event_type)
 
   // Derived state: currently selected order object
   const selectedOrder = validExistingOrders.find(o => o.marketplace_order_id === eventData.order_id) || validExistingOrders[0]
@@ -108,11 +138,7 @@ export default function SimulatedEventSource() {
       let nextSku = prev.sku
       let nextQty = prev.qty
 
-      const availableOrders = existingOrders.filter(o => {
-        if (isScoped) return o.status !== 'CANCELLED' && o.items.some(item => item.sisaKuota > 0)
-        if (newType === 'STATUS_UPDATED') return o.status === 'CREATED'
-        return true
-      })
+      const availableOrders = getValidOrdersForEventType(existingOrders, newType)
 
       if (isNewOrder) {
         // Auto generate new Order ID for ORDER_CREATED
@@ -130,6 +156,10 @@ export default function SimulatedEventSource() {
           nextSku = firstItem?.sku || ''
           nextQty = Math.min(1, firstItem?.sisaKuota || 1)
         }
+      } else {
+        nextOrderId = ''
+        nextSku = ''
+        nextQty = 1
       }
 
       // Auto derive status for STATUS_UPDATED
@@ -178,8 +208,36 @@ export default function SimulatedEventSource() {
     }))
   }
 
+  // Dynamic orderItems handlers for ORDER_CREATED
+  const addOrderItem = () => {
+    const usedSkus = new Set(orderItems.map(i => i.sku))
+    const unusedProd = productOptions.find(p => !usedSkus.has(p.sku)) || productOptions[0]
+    setOrderItems([...orderItems, { sku: unusedProd?.sku || '', qty: 1 }])
+  }
+
+  const removeOrderItem = (index: number) => {
+    if (orderItems.length <= 1) return
+    setOrderItems(orderItems.filter((_, i) => i !== index))
+  }
+
+  const updateOrderItem = (index: number, field: 'sku' | 'qty', value: string | number) => {
+    const updated = [...orderItems]
+    updated[index] = { ...updated[index], [field]: value as any }
+    setOrderItems(updated)
+  }
+
+  const hasDuplicateSku = isOrderCreated && (new Set(orderItems.map(i => i.sku)).size !== orderItems.length)
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+
+    if (isOrderCreated && hasDuplicateSku) {
+      setLog({
+        type: 'error',
+        text: 'Gagal: SKU yang sama dipilih lebih dari sekali. Harap gabungkan kuantitasnya dalam 1 baris.'
+      })
+      return
+    }
     
     // Check validation for follow-up event when no valid orders exist
     if (!isOrderCreated && (!eventData.order_id || validExistingOrders.length === 0)) {
@@ -208,6 +266,10 @@ export default function SimulatedEventSource() {
     setLoading(true)
     setLog({type: 'info', text: `Mengirim simulasi ${eventData.event_id}...`})
 
+    const payloadItems = isOrderCreated
+      ? orderItems.map(i => ({ sku: i.sku, qty: Number(i.qty) }))
+      : [{ sku: finalSku, qty: isStatusUpdated ? 1 : Number(eventData.qty) }]
+
     const payload: MarketplaceEvent = {
       event_id: eventData.event_id,
       channel: eventData.channel as any,
@@ -215,7 +277,7 @@ export default function SimulatedEventSource() {
       event_type: eventData.event_type as any,
       status: finalStatus,
       timestamp: new Date().toISOString(),
-      items: [{ sku: finalSku, qty: isStatusUpdated ? 1 : Number(eventData.qty) }]
+      items: payloadItems
     }
 
     const res = await processMarketplaceEvent(payload)
@@ -224,6 +286,10 @@ export default function SimulatedEventSource() {
       
       // Reload dropdown data to reflect remaining quotas & statuses
       await loadDropdownData()
+
+      if (isOrderCreated) {
+        setOrderItems([{ sku: productOptions[0]?.sku || '', qty: 1 }])
+      }
 
       // Always auto-generate a fresh Event ID after every submit
       const freshEventId = `EV-${Date.now()}`
@@ -235,13 +301,13 @@ export default function SimulatedEventSource() {
         order_id: freshOrderId
       }))
     } else {
-      setLog({type: 'error', text: `Gagal: ${res.error}\n${res.details ? JSON.stringify(res.details) : ''}`})
+      setLog({type: 'error', text: `Gagal: ${(res as any).error}\n${(res as any).details ? JSON.stringify((res as any).details) : ''}`})
     }
     setLoading(false)
   }
 
   return (
-    <div className="bg-white rounded-xl shadow-soft border border-slate-200 overflow-hidden flex flex-col h-full">
+    <div className="bg-white rounded-xl shadow-soft border border-slate-200 overflow-hidden flex flex-col h-auto">
       <div className="p-5 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
         <div className="flex items-center gap-3">
           <div className="p-2 bg-dusty-100 text-dusty-600 rounded-lg shrink-0">
@@ -323,9 +389,10 @@ export default function SimulatedEventSource() {
           <div className="text-xs bg-amber-50 border border-amber-200 text-amber-800 p-3 rounded-lg flex items-start gap-2">
             <Info size={16} className="text-amber-600 shrink-0 mt-0.5" />
             <span>
-              {isItemScopedEvent 
-                ? 'Tidak ada order terdaftar dengan sisa kuota retur/batal. Semua kuota order telah habis atau dibatalkan.' 
-                : 'Belum ada order terdaftar yang dapat dikirim.'}
+              {eventData.event_type === 'STATUS_UPDATED' && 'Belum ada order terdaftar berstatus CREATED yang dapat dikirim.'}
+              {eventData.event_type === 'DELIVERED' && 'Tidak ada order terdaftar berstatus dikirim (SHIPPED/IN_TRANSIT) yang dapat ditandai DELIVERED.'}
+              {eventData.event_type === 'RETURN_REQUESTED' && 'Tidak ada order terdaftar berstatus dikirim (SHIPPED/IN_TRANSIT) dengan sisa kuota retur.'}
+              {eventData.event_type === 'CANCELLED' && 'Tidak ada order terdaftar yang dapat dibatalkan (semua order sudah dibatalkan atau habis kuotanya).'}
             </span>
           </div>
         )}
@@ -360,6 +427,7 @@ export default function SimulatedEventSource() {
             >
               <option value="ORDER_CREATED">Pesanan Dibuat (ORDER_CREATED)</option>
               <option value="STATUS_UPDATED">Barang Dikirim (STATUS_UPDATED)</option>
+              <option value="DELIVERED">Selesai Diterima (DELIVERED)</option>
               <option value="CANCELLED">Dibatalkan (CANCELLED)</option>
               <option value="RETURN_REQUESTED">Retur Diajukan (RETURN_REQUESTED)</option>
             </select>
@@ -384,41 +452,88 @@ export default function SimulatedEventSource() {
           )}
         </div>
 
-        {/* SKU Produk & Qty Fields - Hidden for STATUS_UPDATED */}
-        {!isStatusUpdated && (
-          <div className="grid grid-cols-4 gap-4 animate-in fade-in">
-            {/* SKU Produk Dropdown */}
-            <label className="col-span-3 flex flex-col gap-1.5 text-sm font-medium text-slate-700">
-              <div className="flex justify-between items-center">
-                <span>SKU Produk</span>
-                {isItemScopedEvent && (
-                  <span className="text-[10px] text-amber-700 font-semibold bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
-                    Sisa Kuota Retur / Batal
-                  </span>
-                )}
+        {/* SKU Produk & Qty Fields - Hidden for STATUS_UPDATED and DELIVERED */}
+        {!isStatusUpdated && eventData.event_type !== 'DELIVERED' && (
+          isOrderCreated ? (
+            /* Dynamic Multi-Item Product List for ORDER_CREATED */
+            <div className="space-y-3 animate-in fade-in bg-slate-50/70 p-3.5 rounded-xl border border-slate-200">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                  Daftar Produk Order ({orderItems.length})
+                </span>
+                <button 
+                  type="button"
+                  onClick={addOrderItem}
+                  className="text-xs font-bold text-jade-600 hover:text-jade-700 flex items-center gap-1 bg-jade-50 hover:bg-jade-100 px-2.5 py-1 rounded-lg transition-colors border border-jade-200 shadow-2xs"
+                >
+                  <PlusCircle size={14} /> Tambah Produk
+                </button>
               </div>
 
-              {isOrderCreated ? (
-                // Free selection from all products & bundles
-                <select 
-                  value={eventData.sku} 
-                  onChange={e => setEventData({...eventData, sku: e.target.value})} 
-                  required
-                  disabled={fetchingData}
-                  className="border border-slate-300 rounded-lg px-3 py-2 bg-white font-medium text-slate-800 text-xs focus:ring-2 focus:ring-jade-500 focus:outline-none truncate"
-                >
-                  {productOptions.length === 0 ? (
-                    <option value="">Memuat produk...</option>
-                  ) : (
-                    productOptions.map(p => (
-                      <option key={p.sku} value={p.sku}>
-                        {p.label}
-                      </option>
-                    ))
+              {hasDuplicateSku && (
+                <div className="p-2.5 bg-brick-50 border border-brick-200 text-brick-700 rounded-lg text-xs flex items-center gap-2">
+                  <AlertCircle size={14} className="shrink-0 text-brick-600" />
+                  <span>SKU yang sama dipilih lebih dari sekali dalam order ini. Harap gabungkan kuantitasnya dalam 1 baris.</span>
+                </div>
+              )}
+
+              <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                {orderItems.map((item, idx) => (
+                  <div key={idx} className="flex items-center gap-2 bg-white p-2 rounded-lg border border-slate-200 shadow-2xs">
+                    <select
+                      value={item.sku}
+                      onChange={e => updateOrderItem(idx, 'sku', e.target.value)}
+                      required
+                      disabled={fetchingData}
+                      className="flex-1 min-w-0 border border-slate-300 rounded-md px-2 py-1.5 bg-slate-50 text-xs font-medium text-slate-800 focus:ring-2 focus:ring-jade-500 focus:outline-none truncate"
+                    >
+                      {productOptions.length === 0 ? (
+                        <option value="">Memuat produk...</option>
+                      ) : (
+                        productOptions.map(p => (
+                          <option key={p.sku} value={p.sku}>
+                            {p.label}
+                          </option>
+                        ))
+                      )}
+                    </select>
+
+                    <input
+                      type="number"
+                      min="1"
+                      value={item.qty}
+                      onChange={e => updateOrderItem(idx, 'qty', Math.max(1, parseInt(e.target.value) || 1))}
+                      required
+                      className="w-16 shrink-0 border border-slate-300 rounded-md px-2 py-1.5 bg-white text-xs font-mono text-center focus:ring-2 focus:ring-jade-500 focus:outline-none font-bold text-slate-800"
+                    />
+
+                    <button
+                      type="button"
+                      onClick={() => removeOrderItem(idx)}
+                      disabled={orderItems.length <= 1}
+                      className="shrink-0 p-1.5 text-slate-400 hover:text-brick-600 disabled:opacity-30 disabled:hover:text-slate-400 rounded-md transition-colors"
+                      title="Hapus produk ini"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            /* Single Item Selection for CANCELLED / RETURN_REQUESTED */
+            <div className="grid grid-cols-4 gap-4 animate-in fade-in">
+              {/* SKU Produk Dropdown */}
+              <label className="col-span-3 flex flex-col gap-1.5 text-sm font-medium text-slate-700">
+                <div className="flex justify-between items-center">
+                  <span>SKU Produk</span>
+                  {isItemScopedEvent && (
+                    <span className="text-[10px] text-amber-700 font-semibold bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
+                      Sisa Kuota Retur / Batal
+                    </span>
                   )}
-                </select>
-              ) : (
-                // Filtered selection to only items inside selected order with sisaKuota > 0
+                </div>
+
                 <select 
                   value={eventData.sku} 
                   onChange={e => handleSelectItem(e.target.value)} 
@@ -438,43 +553,43 @@ export default function SimulatedEventSource() {
                     ))
                   )}
                 </select>
-              )}
-            </label>
+              </label>
 
-            {/* Qty Field */}
-            <label className="col-span-1 flex flex-col gap-1.5 text-sm font-medium text-slate-700">
-              <div className="flex justify-between items-center">
-                <span>Qty</span>
-                {isItemScopedEvent && selectedItemOption && (
-                  <span className="text-[10px] font-mono text-slate-500">
-                    Max: {maxQtyAllowed}
-                  </span>
-                )}
-              </div>
-              <input 
-                type="number" 
-                min="1" 
-                max={isItemScopedEvent ? maxQtyAllowed : undefined}
-                value={eventData.qty} 
-                onChange={e => {
-                  const val = Number(e.target.value)
-                  if (isItemScopedEvent && val > maxQtyAllowed) {
-                    setEventData({...eventData, qty: maxQtyAllowed})
-                  } else {
-                    setEventData({...eventData, qty: val})
-                  }
-                }} 
-                required 
-                className="border border-slate-300 rounded-lg px-3 py-2 bg-white text-center font-mono focus:ring-2 focus:ring-jade-500 focus:outline-none text-xs"
-              />
-            </label>
-          </div>
+              {/* Qty Field */}
+              <label className="col-span-1 flex flex-col gap-1.5 text-sm font-medium text-slate-700">
+                <div className="flex justify-between items-center">
+                  <span>Qty</span>
+                  {isItemScopedEvent && selectedItemOption && (
+                    <span className="text-[10px] font-mono text-slate-500">
+                      Max: {maxQtyAllowed}
+                    </span>
+                  )}
+                </div>
+                <input 
+                  type="number" 
+                  min="1" 
+                  max={isItemScopedEvent ? maxQtyAllowed : undefined}
+                  value={eventData.qty} 
+                  onChange={e => {
+                    const val = Number(e.target.value)
+                    if (isItemScopedEvent && val > maxQtyAllowed) {
+                      setEventData({...eventData, qty: maxQtyAllowed})
+                    } else {
+                      setEventData({...eventData, qty: val})
+                    }
+                  }} 
+                  required 
+                  className="border border-slate-300 rounded-lg px-3 py-2 bg-white text-center font-mono focus:ring-2 focus:ring-jade-500 focus:outline-none text-xs"
+                />
+              </label>
+            </div>
+          )
         )}
 
         <button 
           type="submit" 
-          disabled={loading || (!isOrderCreated && validExistingOrders.length === 0)} 
-          className="mt-auto px-4 py-3 bg-slate-800 hover:bg-slate-900 disabled:bg-slate-300 text-white rounded-xl font-bold transition-colors shadow-soft flex items-center justify-center gap-2"
+          disabled={loading || (!isOrderCreated && validExistingOrders.length === 0) || (isOrderCreated && hasDuplicateSku)} 
+          className="mt-2 px-4 py-3 bg-slate-800 hover:bg-slate-900 disabled:bg-slate-300 text-white rounded-xl font-bold transition-colors shadow-soft flex items-center justify-center gap-2"
         >
           {loading ? <Activity className="animate-spin" size={18} /> : <Send size={18} />} Kirim Simulasi Pesanan
         </button>

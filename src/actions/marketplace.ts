@@ -22,7 +22,7 @@ export async function processMarketplaceEvent(event: MarketplaceEvent) {
   if (idempError) {
     // 23505 is PostgreSQL unique_violation code
     if (idempError.code === '23505') {
-      return { success: true, message: 'Idempotent request ignored (already processed)' }
+      return { success: true, isIdempotent: true, message: `Event '${event.event_id}' sudah pernah diproses sebelumnya (dilewati secara idempotent)` }
     }
     return { success: false, error: `Database error checking idempotency: ${idempError.message}` }
   }
@@ -37,6 +37,8 @@ export async function processMarketplaceEvent(event: MarketplaceEvent) {
         return await handleCancelled(adminClient, event)
       case 'RETURN_REQUESTED':
         return await handleReturnRequested(adminClient, event)
+      case 'DELIVERED':
+        return await handleDelivered(adminClient, event)
       default:
         return { success: true, message: `Event type ${event.event_type} handled silently` }
     }
@@ -49,7 +51,7 @@ async function handleOrderCreated(supabase: any, event: MarketplaceEvent) {
   // Check if order already exists
   const { data: existing } = await supabase.from('orders').select('id').eq('marketplace_order_id', event.order_id).single()
   if (existing) {
-    return { success: true, message: 'Order already exists, treating as idempotent' }
+    return { success: true, isIdempotent: true, message: `Order '${event.order_id}' sudah terdaftar sebelumnya (dilewati secara idempotent)` }
   }
 
   // Insert Order
@@ -58,44 +60,37 @@ async function handleOrderCreated(supabase: any, event: MarketplaceEvent) {
     .insert({
       marketplace_order_id: event.order_id,
       channel: event.channel,
-      status: 'CREATED'
+      status: 'CREATED',
+      created_at: event.timestamp || new Date().toISOString()
     })
     .select('id')
     .single()
 
-  if (orderError) throw new Error(`Failed to insert order: ${orderError.message}`)
+  if (orderError) throw new Error(`Gagal membuat order: ${orderError.message}`)
 
   // For each item, resolve whether it's a bundle or single product
-  // Then insert into order_items
   for (const item of event.items) {
-    // 1. Check if it's a bundle recipe (get the latest active version)
-    // Note: We'll assume the highest version number is the active one for a given bundle_sku
-    const { data: recipes, error: recipeError } = await supabase
+    const { data: recipes } = await supabase
       .from('bundle_recipes')
       .select('version, component_product_id, qty')
       .eq('bundle_sku', item.sku)
       .order('version', { ascending: false })
 
     if (recipes && recipes.length > 0) {
-      // It's a bundle!
-      // The highest version is recipes[0].version
       const currentVersion = recipes[0].version
       const activeComponents = recipes.filter((r: any) => r.version === currentVersion)
 
       for (const comp of activeComponents) {
-        // Insert snapshot component
         await supabase.from('order_items').insert({
           order_id: order.id,
           product_id: comp.component_product_id,
-          qty: comp.qty * item.qty, // total qty needed
+          qty: comp.qty * item.qty,
           bundle_sku: item.sku,
           bundle_recipe_version: currentVersion,
           bundle_order_qty: item.qty
         })
       }
     } else {
-      // It's a single product
-      // Find the product id from sku
       const { data: product, error: productError } = await supabase
         .from('products')
         .select('id')
@@ -103,7 +98,7 @@ async function handleOrderCreated(supabase: any, event: MarketplaceEvent) {
         .single()
       
       if (productError || !product) {
-        throw new Error(`Product not found for SKU: ${item.sku}`)
+        throw new Error(`SKU '${item.sku}' tidak ditemukan di master produk`)
       }
 
       await supabase.from('order_items').insert({
@@ -117,20 +112,20 @@ async function handleOrderCreated(supabase: any, event: MarketplaceEvent) {
     }
   }
 
-  return { success: true, message: 'Order created and reserved successfully' }
+  return { success: true, message: 'Pesanan baru dibuat dan stok berhasil di-reservasi' }
 }
 
 async function handleStatusUpdated(supabase: any, event: MarketplaceEvent) {
   // Only trigger on SHIPPED or IN_TRANSIT
   if (event.status !== 'SHIPPED' && event.status !== 'IN_TRANSIT') {
-    return { success: true, message: 'Status not actionable for stock ledger' }
+    return { success: true, isIdempotent: true, message: 'Status tidak memerlukan pemotongan stok' }
   }
 
   // Get order
   const { data: order } = await supabase.from('orders').select('id, status').eq('marketplace_order_id', event.order_id).single()
-  if (!order) throw new Error('Order not found')
-  if (order.status === 'SHIPPED_IN_TRANSIT') return { success: true, message: 'Order already marked as shipped' }
-  if (order.status === 'CANCELLED') throw new Error('Cannot ship a cancelled order')
+  if (!order) throw new Error(`Order '${event.order_id}' tidak ditemukan untuk pengiriman`)
+  if (order.status === 'SHIPPED_IN_TRANSIT') return { success: true, isIdempotent: true, message: `Order '${event.order_id}' sudah ditandai dikirim sebelumnya (dilewati secara idempotent)` }
+  if (order.status === 'CANCELLED') throw new Error(`Order '${event.order_id}' sudah dibatalkan, tidak dapat dikirim`)
 
   // Get order items
   const { data: orderItems, error: itemsError } = await supabase
@@ -138,7 +133,7 @@ async function handleStatusUpdated(supabase: any, event: MarketplaceEvent) {
     .select('*')
     .eq('order_id', order.id)
 
-  if (itemsError || !orderItems) throw new Error('Failed to fetch order items')
+  if (itemsError || !orderItems || orderItems.length === 0) throw new Error(`Gagal mengambil item order untuk '${event.order_id}'`)
 
   // Process FEFO and write ledger for each item using atomic RPC
   for (const item of orderItems) {
@@ -148,10 +143,11 @@ async function handleStatusUpdated(supabase: any, event: MarketplaceEvent) {
       reasonCode: 'SALE',
       channel: event.channel as Channel,
       sourceType: 'MARKETPLACE_ORDER',
-      sourceRefId: event.order_id
+      sourceRefId: event.order_id,
+      createdAt: event.timestamp
     })
     
-    if (!fefoRes.success) throw new Error(`Stock allocation failed: ${fefoRes.error}`)
+    if (!fefoRes.success) throw new Error(`Alokasi FEFO gagal: ${fefoRes.error}`)
   }
 
   // Update order status via RPC to bypass RLS on UPDATE
@@ -160,82 +156,23 @@ async function handleStatusUpdated(supabase: any, event: MarketplaceEvent) {
     p_status: 'SHIPPED_IN_TRANSIT'
   })
 
-  return { success: true, message: 'Order shipped and ledger updated via FEFO' }
+  return { success: true, message: 'Pesanan dikirim dan stok terpotong via FEFO' }
 }
 
 async function handleCancelled(supabase: any, event: MarketplaceEvent) {
   // Get order
   const { data: order } = await supabase.from('orders').select('id, status').eq('marketplace_order_id', event.order_id).single()
   if (!order) {
-    return { success: true, message: 'Order not found, nothing to cancel' }
+    throw new Error(`Order '${event.order_id}' tidak ditemukan untuk pembatalan`)
   }
 
-  if (order.status === 'CANCELLED') return { success: true, message: 'Order already cancelled' }
+  if (order.status === 'CANCELLED') return { success: true, isIdempotent: true, message: `Order '${event.order_id}' sudah dibatalkan sebelumnya (dilewati secara idempotent)` }
 
-  // Get order items to record item-level cancellation
-  const { data: orderItems } = await supabase.from('order_items').select('*').eq('order_id', order.id)
-  
-  let isPartialCancel = false
-
-  if (orderItems && orderItems.length > 0 && event.items && event.items.length > 0) {
-    const cancelInserts = []
-    
-    // Calculate total order quantity
-    const totalOriginalOrderQty = orderItems.reduce((sum: number, oi: any) => sum + (oi.bundle_order_qty || oi.qty || 1), 0)
-    
-    // Calculate cumulative previously cancelled/returned quantity
-    const { data: existingReturns } = await supabase
-      .from('returns')
-      .select('qty_requested, order_item_id')
-      .eq('order_id', order.id)
-
-    const prevProcessedQty = (existingReturns || []).reduce((sum: number, r: any) => sum + (Number(r.qty_requested) || 0), 0)
-    let totalCancelledThisEvent = 0
-
-    for (const cancelItem of event.items) {
-      const { data: prod } = await supabase.from('products').select('id').eq('sku', cancelItem.sku).single()
-      
-      let matchedItems = orderItems.filter((oi: any) => 
-        oi.bundle_sku === cancelItem.sku || (!oi.bundle_sku && oi.product_id === prod?.id)
-      )
-
-      if (matchedItems.length === 0) {
-        matchedItems = orderItems
-      }
-
-      for (const oi of matchedItems) {
-        let componentQtyToCancel = cancelItem.qty
-        if (oi.bundle_sku && oi.bundle_order_qty) {
-          const qtyPerBundle = oi.qty / oi.bundle_order_qty
-          componentQtyToCancel = qtyPerBundle * cancelItem.qty
-        }
-
-        totalCancelledThisEvent += cancelItem.qty
-        cancelInserts.push({
-          order_id: order.id,
-          order_item_id: oi.id,
-          qty_requested: componentQtyToCancel,
-          status: 'PENDING_INSPECTION'
-        })
-      }
-    }
-
-    if (cancelInserts.length > 0) {
-      await supabase.from('returns').insert(cancelInserts)
-    }
-
-    if ((prevProcessedQty + totalCancelledThisEvent) < totalOriginalOrderQty) {
-      isPartialCancel = true
-    }
-  }
-
-  // Update order status to CANCELLED only if full order is cancelled
-  if (!isPartialCancel) {
-    await supabase.rpc('update_order_status', {
-      p_order_id: order.id,
-      p_status: 'CANCELLED'
-    })
-  }
+  // Update order status to CANCELLED
+  await supabase.rpc('update_order_status', {
+    p_order_id: order.id,
+    p_status: 'CANCELLED'
+  })
 
   // If order was SHIPPED_IN_TRANSIT, reverse ledger
   if (order.status === 'SHIPPED_IN_TRANSIT') {
@@ -244,20 +181,30 @@ async function handleCancelled(supabase: any, event: MarketplaceEvent) {
       p_channel: event.channel
     })
 
-    if (cancelErr) throw new Error(`Failed to process marketplace cancel reversal: ${cancelErr.message}`)
+    if (cancelErr) throw new Error(`Gagal memproses pembalikan ledger pembatalan: ${cancelErr.message}`)
+
+    if (event.timestamp) {
+      await supabase
+        .from('stock_ledger')
+        .update({ created_at: event.timestamp })
+        .eq('source_type', 'MARKETPLACE_ORDER')
+        .eq('source_ref_id', event.order_id)
+        .eq('reason_code', 'CANCEL_REVERSAL')
+    }
   }
 
-  return { success: true, message: isPartialCancel ? 'Partial cancellation processed' : 'Order cancelled' }
+  // NOTE: Pembatalan TIDAK PERNAH memasukkan entri ke tabel returns / Inbox Retur!
+  return { success: true, message: 'Pesanan dibatalkan & reservasi stok dilepas' }
 }
 
 async function handleReturnRequested(supabase: any, event: MarketplaceEvent) {
   // Get order
   const { data: order } = await supabase.from('orders').select('id, status').eq('marketplace_order_id', event.order_id).single()
-  if (!order) return { success: true, message: 'Order not found, skipping return' }
+  if (!order) throw new Error(`Order '${event.order_id}' tidak ditemukan untuk pengajuan retur`)
 
   // Fetch all order_items for this order
   const { data: orderItems } = await supabase.from('order_items').select('*').eq('order_id', order.id)
-  if (!orderItems || orderItems.length === 0) return { success: true, message: 'No items in order to return' }
+  if (!orderItems || orderItems.length === 0) throw new Error(`Tidak ada item terdaftar pada order '${event.order_id}'`)
 
   const returnInserts = []
 
@@ -269,11 +216,24 @@ async function handleReturnRequested(supabase: any, event: MarketplaceEvent) {
     )
 
     if (matchedItems.length === 0) {
-      console.warn(`Could not match returned SKU ${retItem.sku} to order ${order.id}`)
-      continue
+      throw new Error(`SKU '${retItem.sku}' tidak ditemukan pada item order '${event.order_id}'`)
     }
 
     for (const oi of matchedItems) {
+      // Idempotency check: check if a pending return for this specific order_item_id already exists!
+      const { data: existingRet } = await supabase
+        .from('returns')
+        .select('id')
+        .eq('order_id', order.id)
+        .eq('order_item_id', oi.id)
+        .eq('status', 'PENDING_INSPECTION')
+        .limit(1)
+
+      if (existingRet && existingRet.length > 0) {
+        // Idempotent: Return inspection for this item already pending
+        continue
+      }
+
       let componentQtyToReturn = retItem.qty
       if (oi.bundle_sku && oi.bundle_order_qty) {
         const qtyPerBundle = oi.qty / oi.bundle_order_qty
@@ -284,17 +244,52 @@ async function handleReturnRequested(supabase: any, event: MarketplaceEvent) {
         order_id: order.id,
         order_item_id: oi.id,
         qty_requested: componentQtyToReturn,
-        status: 'PENDING_INSPECTION'
+        status: 'PENDING_INSPECTION',
+        created_at: event.timestamp || new Date().toISOString()
       })
     }
   }
 
   if (returnInserts.length > 0) {
     const { error } = await supabase.from('returns').insert(returnInserts)
-    if (error) throw new Error(`Failed to create returns: ${error.message}`)
+    if (error) throw new Error(`Gagal membuat entri retur: ${error.message}`)
   }
 
-  return { success: true, message: 'Return requests created in inbox' }
+  return { success: true, message: 'Pengajuan retur diterima dan masuk ke Inbox Retur' }
+}
+
+async function handleDelivered(supabase: any, event: MarketplaceEvent) {
+  // Get order
+  const { data: order } = await supabase.from('orders').select('id, status').eq('marketplace_order_id', event.order_id).single()
+  if (!order) throw new Error(`Order '${event.order_id}' tidak ditemukan untuk penandaan selesai`)
+
+  if (order.status === 'DELIVERED') {
+    return { success: true, isIdempotent: true, message: `Order '${event.order_id}' sudah ditandai selesai (DELIVERED) sebelumnya (dilewati secara idempotent)` }
+  }
+
+  if (order.status === 'CREATED') {
+    throw new Error(`Order '${event.order_id}' masih berstatus CREATED (belum dikirim), tidak dapat ditandai DELIVERED`)
+  }
+
+  if (order.status === 'CANCELLED') {
+    throw new Error(`Order '${event.order_id}' sudah dibatalkan, tidak dapat ditandai DELIVERED`)
+  }
+
+  // Update order status via RPC
+  const { error: rpcErr } = await supabase.rpc('update_order_status', {
+    p_order_id: order.id,
+    p_status: 'DELIVERED'
+  })
+
+  if (rpcErr) {
+    const { error: updateErr } = await supabase.from('orders').update({ status: 'DELIVERED' }).eq('id', order.id)
+    if (updateErr) {
+      console.warn('Note on DELIVERED status DB update:', updateErr.message)
+    }
+  }
+
+  // CRITICAL REQUIREMENT: DELIVERED MUST NOT TOUCH stock_ledger OR stock_balance_cache AT ALL!
+  return { success: true, message: 'Pesanan ditandai selesai (DELIVERED) dan siklus order ditutup' }
 }
 
 import { getInactiveBundleSkus } from './bundle'

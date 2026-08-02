@@ -29,6 +29,36 @@ export async function resolveAnomaly(anomalyId: string, resolutionNote: string) 
   return { success: true }
 }
 
+export async function resolveAnomaliesBulk(anomalyIds: string[], resolutionNote: string) {
+  if (!anomalyIds || anomalyIds.length === 0) {
+    return { success: false, error: 'Tidak ada anomali yang dipilih' }
+  }
+
+  if (!resolutionNote || resolutionNote.trim() === '') {
+    return { success: false, error: 'Catatan penyelesaian (resolution note) wajib diisi' }
+  }
+
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  const adminClient = createAdminClient()
+
+  const { error } = await adminClient
+    .from('anomalies')
+    .update({
+      status: 'RESOLVED',
+      resolved_at: new Date().toISOString(),
+      resolved_by: user?.id,
+      resolution_note: resolutionNote
+    })
+    .in('id', anomalyIds)
+
+  if (error) {
+    return { success: false, error: 'Gagal menandai anomali sebagai selesai: ' + error.message }
+  }
+
+  return { success: true, count: anomalyIds.length }
+}
+
 export async function getOpenAnomalies() {
   const adminClient = createAdminClient()
   const { data, count, error } = await adminClient

@@ -1,15 +1,15 @@
 import FileImportEventSource from '@/components/FileImportEventSource'
 import SimulatedEventSource from '@/components/SimulatedEventSource'
-import { Webhook, Info } from 'lucide-react'
+import { MonitorPlay, Info } from 'lucide-react'
 
 export default function SimulationPage() {
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
       <header>
         <h1 className="text-3xl font-bold tracking-tight text-slate-900 flex items-center gap-2">
-          <Webhook className="text-jade-500" /> Simulasi Sistem
+          <MonitorPlay className="text-jade-500" /> Simulasi Sistem
         </h1>
-        <p className="text-slate-500 mt-2">Simulasikan kejadian pesanan dari Shopee dan TikTok untuk menguji alur reservasi stok dan algoritma FEFO.</p>
+        <p className="text-slate-500 mt-2">Simulasikan kejadian pesanan dari Shopee dan TikTok untuk menguji alur reservasi stok</p>
       </header>
 
       <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex gap-3 text-slate-800 text-sm">
@@ -33,7 +33,7 @@ export default function SimulationPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
         <FileImportEventSource />
         <SimulatedEventSource />
       </div>

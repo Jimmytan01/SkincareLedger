@@ -12,6 +12,41 @@ export interface ManualEntryPayload {
   referenceNote?: string
 }
 
+export interface MultiManualEntryItem {
+  productId: string
+  qty: number
+}
+
+export interface MultiManualEntryPayload {
+  items: MultiManualEntryItem[]
+  reasonCode: ReasonCode
+  channel: Channel
+  referenceNote?: string
+}
+
+export interface MultiValidationProductItem {
+  productId: string
+  productName: string
+  productSku: string
+  qty: number
+  currentBalance: number
+  reservedQty: number
+  availableQty: number
+  projectedBalance: number
+  isEatingReservation: boolean
+  isPhysicalInsufficient: boolean
+}
+
+export type MultiValidationResult =
+  | {
+      success: true
+      hasError: boolean
+      isBlocked: boolean
+      errorMessage?: string
+      items: MultiValidationProductItem[]
+    }
+  | { success: false; error: string }
+
 export type ValidationResult = 
   | { 
       success: true; 
@@ -110,6 +145,142 @@ export async function commitManualEntry(payload: ManualEntryPayload, idempotency
   }
 
   return { success: true, message: 'Entri manual berhasil dicatat', sourceRefId }
+}
+
+export async function validateMultiManualEntry(payload: MultiManualEntryPayload): Promise<MultiValidationResult> {
+  if (!payload.items || payload.items.length === 0) {
+    return { success: false, error: 'Minimal 1 produk wajib ditambahkan' }
+  }
+
+  if (['BONUS', 'PROMO', 'SAMPLE'].includes(payload.reasonCode)) {
+    if (!payload.referenceNote || payload.referenceNote.trim() === '') {
+      return { success: false, error: `Catatan Referensi WAJIB diisi untuk alasan ${payload.reasonCode}` }
+    }
+  }
+
+  // Check duplicate product IDs
+  const productIds = payload.items.map(i => i.productId)
+  if (new Set(productIds).size !== productIds.length) {
+    return { success: false, error: 'Produk yang sama dipilih lebih dari sekali. Harap gabungkan kuantitasnya dalam 1 baris.' }
+  }
+
+  const adminClient = createAdminClient()
+
+  // Fetch product info for all items
+  const { data: prodData } = await adminClient
+    .from('products')
+    .select('id, name, sku')
+    .in('id', productIds)
+
+  const prodMap = new Map((prodData || []).map(p => [p.id, p]))
+
+  const validationItems: MultiValidationProductItem[] = []
+  let hasError = false
+  let isBlocked = false
+
+  for (const item of payload.items) {
+    if (item.qty <= 0) {
+      return { success: false, error: 'Kuantitas setiap produk harus lebih dari 0' }
+    }
+
+    const pInfo = prodMap.get(item.productId)
+    const pName = pInfo?.name || item.productId
+    const pSku = pInfo?.sku || ''
+
+    const balanceRes = await getProductBalance(item.productId)
+    const currentBalance = balanceRes.success ? (balanceRes.qty || 0) : 0
+    const projectedBalance = currentBalance - item.qty
+
+    // Reserved stock from CREATED orders
+    const { data: reservedItems } = await adminClient
+      .from('order_items')
+      .select('qty, orders!inner(status)')
+      .eq('product_id', item.productId)
+      .eq('orders.status', 'CREATED')
+
+    const reservedQty = (reservedItems || []).reduce((sum, r) => sum + (r.qty || 0), 0)
+    const availableQty = Math.max(0, currentBalance - reservedQty)
+
+    const isPhysicalInsufficient = projectedBalance < 0
+    const isEatingReservation = item.qty > availableQty
+
+    if (isPhysicalInsufficient || isEatingReservation) {
+      hasError = true
+      isBlocked = true
+    }
+
+    validationItems.push({
+      productId: item.productId,
+      productName: pName,
+      productSku: pSku,
+      qty: item.qty,
+      currentBalance,
+      reservedQty,
+      availableQty,
+      projectedBalance,
+      isEatingReservation,
+      isPhysicalInsufficient
+    })
+  }
+
+  let errorMessage: string | undefined
+  if (isBlocked) {
+    const blockedNames = validationItems
+      .filter(i => i.isEatingReservation || i.isPhysicalInsufficient)
+      .map(i => `${i.productName} (${i.productSku})`)
+      .join(', ')
+    errorMessage = `Transaksi ditolak (All-or-Nothing): Qty keluar untuk produk [${blockedNames}] melebihi Stok Aman Dijual / Stok Fisik.`
+  }
+
+  return {
+    success: true,
+    hasError,
+    isBlocked,
+    errorMessage,
+    items: validationItems
+  }
+}
+
+export async function commitMultiManualEntry(payload: MultiManualEntryPayload, idempotencyKey?: string): Promise<CommitResult> {
+  const val = await validateMultiManualEntry(payload)
+  if (!val.success) return val
+
+  if (val.isBlocked) {
+    return {
+      success: false,
+      error: val.errorMessage || 'Transaksi ditolak: Salah satu atau lebih produk melanggar batas Stok Aman Dijual.'
+    }
+  }
+
+  let userId: string | null = null
+  try {
+    const supabase = await createClient()
+    const { data: authData } = await supabase.auth.getUser()
+    userId = authData?.user?.id || null
+  } catch {
+    userId = null
+  }
+
+  const batchRefId = idempotencyKey || `MANUAL-${Date.now()}`
+
+  for (const item of payload.items) {
+    const fefoRes = await processStockOutFefo({
+      productId: item.productId,
+      qtyNeeded: item.qty,
+      reasonCode: payload.reasonCode,
+      channel: payload.channel,
+      sourceType: 'MANUAL',
+      sourceRefId: batchRefId,
+      createdBy: userId || undefined,
+      referenceNote: payload.referenceNote
+    })
+
+    if (!fefoRes.success) {
+      return { success: false, error: fefoRes.error || `Gagal mengalokasikan stok via FEFO untuk produk ${item.productId}` }
+    }
+  }
+
+  return { success: true, message: `Entri manual ${payload.items.length} produk berhasil dicatat ke Ledger`, sourceRefId: batchRefId }
 }
 
 export async function commitCorrection(ledgerId: string, referenceNote?: string, idempotencyKey?: string): Promise<CommitResult> {

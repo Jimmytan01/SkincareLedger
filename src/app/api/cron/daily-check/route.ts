@@ -18,14 +18,14 @@ export async function GET(request: Request) {
   const adminClient = createAdminClient()
   const anomaliesToInsert: any[] = []
 
-  // 1. STALE_ORDER: Shipped/In Transit > 3 days
+  // 1. STALE_ORDER: Shipped/In Transit > 3 days (EXCLUDING DELIVERED and CANCELLED orders)
   const threeDaysAgo = new Date()
   threeDaysAgo.setDate(threeDaysAgo.getDate() - 3)
 
   const { data: staleOrders, error: staleErr } = await adminClient
     .from('orders')
     .select('id, marketplace_order_id, created_at, status')
-    .in('status', ['SHIPPED', 'IN_TRANSIT'])
+    .eq('status', 'SHIPPED_IN_TRANSIT')
     .lt('created_at', threeDaysAgo.toISOString())
 
   if (staleOrders && staleOrders.length > 0) {
@@ -43,7 +43,7 @@ export async function GET(request: Request) {
   const { data: processedOrders } = await adminClient
     .from('orders')
     .select('id, marketplace_order_id')
-    .in('status', ['SHIPPED', 'IN_TRANSIT'])
+    .eq('status', 'SHIPPED_IN_TRANSIT')
 
   if (processedOrders && processedOrders.length > 0) {
     const orderIds = processedOrders.map(o => o.id)

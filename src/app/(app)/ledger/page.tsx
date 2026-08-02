@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, Suspense } from 'react'
-import { useSearchParams } from 'next/navigation'
+import { useSearchParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/utils/supabase/client'
 import { commitCorrection } from '@/actions/manual'
@@ -24,6 +24,7 @@ function downloadCSV(filename: string, csvContent: string) {
 }
 
 function LedgerContent() {
+  const router = useRouter()
   const searchParams = useSearchParams()
   const urlProductId = searchParams.get('product_id')
   const urlBatchId = searchParams.get('batch_id')
@@ -318,6 +319,9 @@ function LedgerContent() {
     setFilterDateTo('')
     setFilterSearch('')
     setPage(1)
+    if (urlProductId || urlBatchId || urlRefId) {
+      router.push('/ledger')
+    }
   }
 
   const hasActiveFilters = Boolean(
@@ -361,9 +365,13 @@ function LedgerContent() {
               Filter Aktif dari Anomali: {urlProductId ? 'Berdasarkan Produk' : ''} {urlBatchId ? 'Berdasarkan Batch' : ''} {urlRefId ? `Order Ref: ${urlRefId}` : ''}
             </span>
           </div>
-          <Link href="/ledger" className="inline-flex items-center gap-1 text-jade-700 hover:text-jade-900 font-bold bg-white px-2.5 py-1 rounded-lg border border-jade-200 transition-colors">
+          <button 
+            type="button"
+            onClick={() => router.push('/ledger')}
+            className="inline-flex items-center gap-1 text-jade-700 hover:text-jade-900 font-bold bg-white px-2.5 py-1 rounded-lg border border-jade-200 transition-colors cursor-pointer"
+          >
             <XCircle size={14} /> Hapus Filter
-          </Link>
+          </button>
         </div>
       )}
 

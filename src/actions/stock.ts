@@ -15,6 +15,7 @@ export interface ProcessStockOutFefoParams {
   sourceRefId: string
   createdBy?: string
   referenceNote?: string
+  createdAt?: string
 }
 
 export async function processStockOutFefo(params: ProcessStockOutFefoParams) {
@@ -46,10 +47,21 @@ export async function processStockOutFefo(params: ProcessStockOutFefoParams) {
         type: 'NEGATIVE_BALANCE_ATTEMPT',
         description: `Upaya transaksi (${params.reasonCode}) ditolak karena stok tidak cukup.`,
         related_ids: { product_id: params.productId, qty_needed: params.qtyNeeded },
-        status: 'OPEN'
+        status: 'OPEN',
+        detected_at: params.createdAt || new Date().toISOString()
       })
     }
     return { success: false, error: error.message }
+  }
+
+  // If a historical timestamp is provided, update the created_at timestamp on stock_ledger
+  if (params.createdAt) {
+    const adminClient = createAdminClient()
+    await adminClient
+      .from('stock_ledger')
+      .update({ created_at: params.createdAt })
+      .eq('source_type', params.sourceType)
+      .eq('source_ref_id', params.sourceRefId)
   }
 
   return { success: true, allocations: data.allocations }

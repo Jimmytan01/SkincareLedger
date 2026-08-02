@@ -7,6 +7,10 @@ import {
   ManualEntryPayload, 
   validateManualEntry, 
   commitManualEntry, 
+  MultiManualEntryPayload,
+  MultiValidationProductItem,
+  validateMultiManualEntry,
+  commitMultiManualEntry,
   MaklonStockInPayload, 
   validateMaklonStockIn, 
   commitMaklonStockIn,
@@ -22,7 +26,10 @@ import {
   PackagePlus, 
   PackageMinus,
   Calendar,
-  Layers
+  Layers,
+  PlusCircle,
+  Trash2,
+  AlertCircle
 } from 'lucide-react'
 
 export default function ManualEntryPage() {
@@ -35,10 +42,9 @@ export default function ManualEntryPage() {
 
   const [successMsg, setSuccessMsg] = useState('')
 
-  // Card Kanan: Form Barang Keluar
-  const [formOut, setFormOut] = useState<ManualEntryPayload>({
-    productId: '',
-    qty: 1,
+  // Card Kanan: Form Barang Keluar (Multi Product)
+  const [formOut, setFormOut] = useState<MultiManualEntryPayload>({
+    items: [{ productId: '', qty: 1 }],
     reasonCode: 'SALE',
     channel: 'OFFLINE',
     referenceNote: ''
@@ -68,7 +74,10 @@ export default function ManualEntryPage() {
       if (data && data.length > 0) {
         setProducts(data)
         const firstProdId = data[0].id
-        setFormOut(prev => ({ ...prev, productId: firstProdId }))
+        setFormOut(prev => ({
+          ...prev,
+          items: [{ productId: firstProdId, qty: 1 }]
+        }))
         setFormIn(prev => ({ 
           ...prev, 
           productId: firstProdId,
@@ -101,6 +110,32 @@ export default function ManualEntryPage() {
     }))
     loadProductBatches(prodId)
   }
+
+  // Row Management for FormOut (Barang Keluar)
+  const addRowOut = () => {
+    const usedIds = new Set(formOut.items.map(i => i.productId))
+    const unusedProduct = products.find(p => !usedIds.has(p.id)) || products[0]
+    setFormOut(prev => ({
+      ...prev,
+      items: [...prev.items, { productId: unusedProduct?.id || '', qty: 1 }]
+    }))
+  }
+
+  const removeRowOut = (index: number) => {
+    if (formOut.items.length <= 1) return
+    setFormOut(prev => ({
+      ...prev,
+      items: prev.items.filter((_, i) => i !== index)
+    }))
+  }
+
+  const updateRowOut = (index: number, field: 'productId' | 'qty', value: string | number) => {
+    const updated = [...formOut.items]
+    updated[index] = { ...updated[index], [field]: value }
+    setFormOut(prev => ({ ...prev, items: updated }))
+  }
+
+  const hasDuplicateProductOut = new Set(formOut.items.map(i => i.productId)).size !== formOut.items.length
 
   // Handle Barang Masuk Maklon Review
   const handleReviewIn = async (e: React.FormEvent) => {
@@ -138,14 +173,26 @@ export default function ManualEntryPage() {
   const handleReviewOut = async (e: React.FormEvent) => {
     e.preventDefault()
     setErrorOut('')
+
+    if (hasDuplicateProductOut) {
+      setErrorOut('Produk yang sama dipilih lebih dari sekali. Harap gabungkan kuantitasnya dalam 1 baris.')
+      return
+    }
+
+    for (const item of formOut.items) {
+      if (!item.productId || item.qty <= 0) {
+        setErrorOut('Setiap produk harus dipilih dan kuantitasnya harus lebih dari 0.')
+        return
+      }
+    }
     
-    if (['BONUS', 'PROMO', 'SAMPLE'].includes(formOut.reasonCode) && !formOut.referenceNote) {
+    if (['BONUS', 'PROMO', 'SAMPLE'].includes(formOut.reasonCode) && !formOut.referenceNote?.trim()) {
       setErrorOut(`Catatan Referensi WAJIB diisi untuk alasan ${formOut.reasonCode}`)
       return
     }
 
     setLoadingOut(true)
-    const val = await validateManualEntry(formOut)
+    const val = await validateMultiManualEntry(formOut)
     setLoadingOut(false)
 
     if (val.success) {
@@ -160,7 +207,7 @@ export default function ManualEntryPage() {
   const handleCommitOut = async () => {
     setErrorOut('')
     setLoadingOut(true)
-    const res = await commitManualEntry(formOut)
+    const res = await commitMultiManualEntry(formOut)
     setLoadingOut(false)
 
     if (res.success) {
@@ -189,8 +236,7 @@ export default function ManualEntryPage() {
 
   const resetFormOut = () => {
     setFormOut({
-      productId: products[0]?.id || '',
-      qty: 1,
+      items: [{ productId: products[0]?.id || '', qty: 1 }],
       reasonCode: 'SALE',
       channel: 'OFFLINE',
       referenceNote: ''
@@ -200,7 +246,6 @@ export default function ManualEntryPage() {
   }
 
   const prodInName = products.find(p => p.id === formIn.productId)?.name
-  const prodOutName = products.find(p => p.id === formOut.productId)?.name
   const isReasonRequiringNote = ['BONUS', 'PROMO', 'SAMPLE'].includes(formOut.reasonCode)
   const selectedExistingBatch = existingBatches.find(b => b.id === formIn.existingBatchId)
 
@@ -483,18 +528,64 @@ export default function ManualEntryPage() {
 
             {stepOut === 0 && (
               <form onSubmit={handleReviewOut} className="space-y-4">
-                <label className="flex flex-col gap-1.5 text-sm font-medium text-slate-700">
-                  Pilih Produk
-                  <select 
-                    value={formOut.productId} 
-                    onChange={e => setFormOut({ ...formOut, productId: e.target.value })}
-                    className="border border-slate-300 rounded-lg px-3 py-2 bg-slate-50 focus:ring-2 focus:ring-jade-500 focus:outline-none text-xs font-medium text-slate-800"
-                  >
-                    {products.map(p => (
-                      <option key={p.id} value={p.id}>{p.name} ({p.sku})</option>
+                {/* Dynamic Product List */}
+                <div className="space-y-3 bg-slate-50/70 p-3.5 rounded-xl border border-slate-200">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-800">
+                      Daftar Produk Keluar ({formOut.items.length})
+                    </span>
+                    <button 
+                      type="button"
+                      onClick={addRowOut}
+                      className="text-xs font-bold text-jade-600 hover:text-jade-700 flex items-center gap-1 bg-jade-50 hover:bg-jade-100 px-2.5 py-1 rounded-lg transition-colors border border-jade-200 shadow-2xs"
+                    >
+                      <PlusCircle size={14} /> Tambah Produk
+                    </button>
+                  </div>
+
+                  {hasDuplicateProductOut && (
+                    <div className="p-2.5 bg-brick-50 border border-brick-200 text-brick-700 rounded-lg text-xs flex items-center gap-2">
+                      <AlertCircle size={14} className="shrink-0 text-brick-600" />
+                      <span>Produk yang sama dipilih lebih dari sekali. Harap gabungkan kuantitasnya dalam 1 baris.</span>
+                    </div>
+                  )}
+
+                  <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                    {formOut.items.map((item, idx) => (
+                      <div key={idx} className="flex items-center gap-2 bg-white p-2 rounded-lg border border-slate-200 shadow-2xs">
+                        <select 
+                          value={item.productId} 
+                          onChange={e => updateRowOut(idx, 'productId', e.target.value)}
+                          required
+                          className="flex-1 min-w-0 border border-slate-300 rounded-md px-2 py-1.5 bg-slate-50 text-xs font-medium text-slate-800 focus:ring-2 focus:ring-jade-500 focus:outline-none truncate"
+                        >
+                          {products.map(p => (
+                            <option key={p.id} value={p.id}>{p.name} ({p.sku})</option>
+                          ))}
+                        </select>
+
+                        <input 
+                          type="number" 
+                          min="1" 
+                          value={item.qty} 
+                          onChange={e => updateRowOut(idx, 'qty', Math.max(1, parseInt(e.target.value) || 1))}
+                          required
+                          className="w-16 shrink-0 border border-slate-300 rounded-md px-2 py-1.5 bg-white text-xs font-mono text-center font-bold text-brick-600 focus:ring-2 focus:ring-jade-500 focus:outline-none"
+                        />
+
+                        <button 
+                          type="button"
+                          onClick={() => removeRowOut(idx)}
+                          disabled={formOut.items.length <= 1}
+                          className="shrink-0 p-1.5 text-slate-400 hover:text-brick-600 disabled:opacity-30 disabled:hover:text-slate-400 rounded-md transition-colors"
+                          title="Hapus produk ini"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
                     ))}
-                  </select>
-                </label>
+                  </div>
+                </div>
 
                 <div className="grid grid-cols-2 gap-3">
                   <label className="flex flex-col gap-1.5 text-xs font-medium text-slate-700">
@@ -528,44 +619,30 @@ export default function ManualEntryPage() {
                   </label>
                 </div>
 
-                <div className="grid grid-cols-3 gap-3">
-                  <label className="col-span-1 flex flex-col gap-1.5 text-xs font-medium text-slate-700">
-                    Qty Keluar
-                    <input 
-                      type="number" 
-                      min="1" 
-                      value={formOut.qty} 
-                      onChange={e => setFormOut({ ...formOut, qty: Number(e.target.value) })}
-                      required
-                      className="border border-slate-300 rounded-lg px-3 py-2 bg-white text-center font-mono text-base font-bold text-brick-600 focus:ring-2 focus:ring-jade-500 focus:outline-none"
-                    />
-                  </label>
-
-                  <label className="col-span-2 flex flex-col gap-1.5 text-xs font-medium text-slate-700">
-                    <div className="flex justify-between items-center">
-                      <span>Catatan Referensi</span>
-                      {isReasonRequiringNote && (
-                        <span className="text-[10px] text-amber-700 font-bold px-1.5 py-0.5 bg-amber-50 rounded">
-                          *Wajib
-                        </span>
-                      )}
-                    </div>
-                    <input 
-                      type="text" 
-                      value={formOut.referenceNote || ''} 
-                      onChange={e => setFormOut({ ...formOut, referenceNote: e.target.value })}
-                      placeholder={isReasonRequiringNote ? "Contoh: Hadiah Campaign Lebaran 2026" : "Opsional"}
-                      className="border border-slate-300 rounded-lg px-3 py-2 bg-white text-xs focus:ring-2 focus:ring-jade-500 focus:outline-none"
-                    />
-                  </label>
-                </div>
+                <label className="flex flex-col gap-1.5 text-xs font-medium text-slate-700">
+                  <div className="flex justify-between items-center">
+                    <span>Catatan Referensi</span>
+                    {isReasonRequiringNote && (
+                      <span className="text-[10px] text-amber-700 font-bold px-1.5 py-0.5 bg-amber-50 rounded">
+                        *Wajib
+                      </span>
+                    )}
+                  </div>
+                  <input 
+                    type="text" 
+                    value={formOut.referenceNote || ''} 
+                    onChange={e => setFormOut({ ...formOut, referenceNote: e.target.value })}
+                    placeholder={isReasonRequiringNote ? "Contoh: Hadiah Campaign Lebaran 2026" : "Opsional"}
+                    className="border border-slate-300 rounded-lg px-3 py-2 bg-white text-xs focus:ring-2 focus:ring-jade-500 focus:outline-none"
+                  />
+                </label>
 
                 <button 
                   type="submit" 
-                  disabled={loadingOut || (isReasonRequiringNote && !formOut.referenceNote)}
+                  disabled={loadingOut || (isReasonRequiringNote && !formOut.referenceNote) || hasDuplicateProductOut}
                   className="w-full mt-2 py-3 bg-slate-800 hover:bg-slate-900 disabled:bg-slate-300 text-white rounded-xl font-bold transition-colors shadow-soft flex items-center justify-center gap-2 text-sm"
                 >
-                  {loadingOut ? <Activity className="animate-spin" size={18} /> : <ArrowRight size={18} />} Tinjau & Validasi Pengeluaran
+                  {loadingOut ? <Activity className="animate-spin" size={18} /> : <ArrowRight size={18} />} Tinjau & Validasi Pengeluaran ({formOut.items.length} Produk)
                 </button>
               </form>
             )}
@@ -575,47 +652,85 @@ export default function ManualEntryPage() {
               <div className="space-y-4 animate-in slide-in-from-right-4 duration-200">
                 <div className="p-4 bg-brick-50 border border-brick-200 rounded-xl">
                   <h3 className="font-bold text-brick-900 text-sm flex items-center gap-2">
-                    <AlertTriangle size={18} className="text-brick-600" /> Konfirmasi Pengeluaran Permanen
+                    <AlertTriangle size={18} className="text-brick-600" /> Konfirmasi Pengeluaran Permanen ({valResultOut.items.length} Produk)
                   </h3>
                   <p className="text-xs text-brick-700 mt-1">
-                    Tindakan ini akan memotong stok fisik via FEFO secara permanen.
+                    Tindakan ini akan memotong stok fisik via FEFO secara permanen untuk seluruh produk di bawah ini.
                   </p>
                 </div>
 
-                {valResultOut.isEatingReservation && (
+                {valResultOut.isBlocked && (
                   <div className="p-4 bg-brick-50 border-2 border-brick-300 rounded-xl flex items-start gap-3 text-brick-950 animate-in fade-in">
                     <AlertTriangle size={20} className="text-brick-600 shrink-0 mt-0.5" />
                     <div className="text-xs space-y-1">
-                      <div className="font-bold text-brick-900 text-sm">Tidak Bisa Diproses (Di-Block System)</div>
+                      <div className="font-bold text-brick-900 text-sm">Tidak Bisa Diproses (Di-Block System - All-or-Nothing)</div>
                       <p className="text-brick-800 leading-relaxed">
-                        Tidak bisa diproses — Qty Keluar ini (<strong>{formatQty(formOut.qty)} unit</strong>) melebihi Stok Aman Dijual (sisa <strong>{formatQty(valResultOut.availableQty)} unit</strong> tersedia). Sisa <strong>{formatQty(valResultOut.reservedQty)} unit</strong> sedang direservasi untuk order yang belum dikirim. Silakan kurangi Qty Keluar atau batalkan.
+                        {valResultOut.errorMessage || 'Satu atau lebih produk melanggar ketersediaan Stok Aman Dijual / Stok Fisik. Silakan kurangi Qty Keluar atau batalkan.'}
                       </p>
                     </div>
                   </div>
                 )}
 
-                <table className="w-full text-xs text-slate-700 border-collapse">
-                  <tbody className="divide-y divide-slate-100">
-                    <tr><th className="py-2 font-medium text-slate-500 text-left">Produk</th><td className="py-2 font-bold text-slate-900">{prodOutName}</td></tr>
-                    <tr><th className="py-2 font-medium text-slate-500 text-left">Qty Keluar</th><td className="py-2 font-mono font-bold text-brick-600 text-sm">-{formatQty(formOut.qty)} unit</td></tr>
-                    <tr><th className="py-2 font-medium text-slate-500 text-left">Alasan (Reason)</th><td className="py-2"><span className="bg-slate-100 text-slate-800 px-2 py-0.5 rounded font-bold text-[11px]">{formOut.reasonCode}</span></td></tr>
-                    <tr><th className="py-2 font-medium text-slate-500 text-left">Kanal</th><td className="py-2 text-slate-600">{formOut.channel}</td></tr>
-                    <tr><th className="py-2 font-medium text-slate-500 text-left">Referensi</th><td className="py-2 italic text-slate-600">{formOut.referenceNote || '-'}</td></tr>
-                    
-                    <tr className="bg-slate-50">
-                      <th className="py-2 px-3 rounded-l-lg font-medium text-slate-700 text-left">Stok Fisik Saat Ini</th>
-                      <td className="py-2 px-3 rounded-r-lg font-mono text-slate-700">{formatQty(valResultOut.currentBalance)} unit</td>
-                    </tr>
-                    <tr className="bg-amber-50/50">
-                      <th className="py-2 px-3 rounded-l-lg font-medium text-amber-900 text-left">Stok Aman Dijual</th>
-                      <td className="py-2 px-3 rounded-r-lg font-mono font-bold text-amber-800">{formatQty(valResultOut.availableQty)} unit</td>
-                    </tr>
-                    <tr className="bg-brick-50">
-                      <th className="py-2.5 px-3 rounded-l-lg font-bold text-brick-900 text-left">Proyeksi Sisa Stok Fisik</th>
-                      <td className="py-2.5 px-3 rounded-r-lg font-mono font-bold text-brick-700 text-base">{formatQty(valResultOut.projectedBalance)} unit</td>
-                    </tr>
-                  </tbody>
-                </table>
+                {/* Shared Transaction Metadata */}
+                <div className="grid grid-cols-3 gap-2 bg-slate-50 p-2.5 rounded-lg border border-slate-200 text-xs">
+                  <div>
+                    <span className="text-[10px] text-slate-500 block">Alasan (Reason)</span>
+                    <span className="font-bold text-slate-800">{formOut.reasonCode}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-slate-500 block">Kanal</span>
+                    <span className="font-semibold text-slate-800">{formOut.channel}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-slate-500 block">Catatan Referensi</span>
+                    <span className="italic text-slate-700 truncate block">{formOut.referenceNote || '-'}</span>
+                  </div>
+                </div>
+
+                {/* Confirmation Table for ALL Products */}
+                <div className="overflow-x-auto border border-slate-200 rounded-xl shadow-2xs">
+                  <table className="w-full text-xs text-left border-collapse">
+                    <thead className="bg-slate-100 text-slate-700 font-semibold border-b border-slate-200">
+                      <tr>
+                        <th className="py-2.5 px-3">Produk & SKU</th>
+                        <th className="py-2.5 px-3 text-center">Qty Keluar</th>
+                        <th className="py-2.5 px-3 text-right">Stok Fisik</th>
+                        <th className="py-2.5 px-3 text-right">Stok Aman</th>
+                        <th className="py-2.5 px-3 text-right">Proyeksi Sisa</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {valResultOut.items.map((item: MultiValidationProductItem, idx: number) => {
+                        const isProblem = item.isEatingReservation || item.isPhysicalInsufficient
+                        return (
+                          <tr key={idx} className={isProblem ? 'bg-brick-50/80 text-brick-950 font-medium' : 'bg-white text-slate-800'}>
+                            <td className="py-2.5 px-3">
+                              <div className="font-bold">{item.productName}</div>
+                              <div className="text-[10px] font-mono text-slate-500">{item.productSku}</div>
+                              {isProblem && (
+                                <div className="text-[10px] text-brick-600 font-bold mt-0.5 flex items-center gap-1">
+                                  <AlertTriangle size={10} /> {item.isPhysicalInsufficient ? 'Stok Fisik Kurang' : 'Melebihi Stok Aman'}
+                                </div>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-3 text-center font-mono font-bold text-brick-600">
+                              -{formatQty(item.qty)}
+                            </td>
+                            <td className="py-2.5 px-3 text-right font-mono text-slate-700">
+                              {formatQty(item.currentBalance)} unit
+                            </td>
+                            <td className="py-2.5 px-3 text-right font-mono font-bold text-amber-800">
+                              {formatQty(item.availableQty)} unit
+                            </td>
+                            <td className={`py-2.5 px-3 text-right font-mono font-bold ${item.projectedBalance < 0 ? 'text-brick-600' : 'text-slate-800'}`}>
+                              {formatQty(item.projectedBalance)} unit
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
 
                 <div className="flex gap-3 pt-2">
                   <button 
@@ -628,11 +743,11 @@ export default function ManualEntryPage() {
                   <button 
                     type="button"
                     onClick={handleCommitOut} 
-                    disabled={loadingOut || valResultOut.isEatingReservation || valResultOut.projectedBalance < 0}
+                    disabled={loadingOut || valResultOut.isBlocked}
                     className="flex-1 py-2.5 bg-slate-800 hover:bg-slate-900 disabled:bg-slate-200 disabled:text-slate-400 disabled:border disabled:border-slate-300 disabled:cursor-not-allowed text-white rounded-xl font-bold text-xs transition-colors shadow-soft flex items-center justify-center gap-1.5"
                   >
                     {loadingOut ? <Activity className="animate-spin" size={14} /> : <CheckCircle2 size={14} />} 
-                    {valResultOut.isEatingReservation ? 'Transaksi Ditolak (Stok Terreservasi)' : 'Potong Stok via FEFO'}
+                    {valResultOut.isBlocked ? 'Transaksi Ditolak (Stok Terreservasi)' : `Potong Stok via FEFO (${valResultOut.items.length} Produk)`}
                   </button>
                 </div>
               </div>
@@ -644,7 +759,7 @@ export default function ManualEntryPage() {
                 <CheckCircle2 size={48} className="mx-auto text-jade-400" />
                 <h3 className="font-bold text-lg">{successMsg}</h3>
                 <p className="text-xs text-slate-300">
-                  Stok telah dipotong dan dialokasikan sesuai urutan FEFO di Buku Besar.
+                  Stok seluruh produk telah dipotong dan dialokasikan sesuai urutan FEFO di Buku Besar.
                 </p>
                 <button 
                   onClick={resetFormOut}
