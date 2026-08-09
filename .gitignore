@@ -46,3 +46,6 @@ AGENTS.md
 docs/
 scratch/
 public/
+check-db.mjs
+test-fefo.mjs
+test-write.mjs

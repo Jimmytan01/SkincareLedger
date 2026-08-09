@@ -241,7 +241,7 @@ export default function FileImportEventSource() {
             status,
             sku,
             qty,
-            timestamp: timestamp || new Date().toISOString(),
+            timestamp: timestamp || '',
             isValid,
             errorMessage: isValid ? null : errs.join('; ')
           })

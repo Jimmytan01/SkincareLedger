@@ -29,13 +29,26 @@ export async function GET(request: Request) {
     .lt('created_at', threeDaysAgo.toISOString())
 
   if (staleOrders && staleOrders.length > 0) {
+    // Prevent creating duplicate STALE_ORDER anomalies for the same order if one is already OPEN
+    const { data: existingStale } = await adminClient
+      .from('anomalies')
+      .select('related_ids')
+      .eq('type', 'STALE_ORDER')
+      .eq('status', 'OPEN')
+
+    const existingStaleOrderIds = new Set(
+      existingStale?.map(a => (a.related_ids as any)?.order_id).filter(Boolean) || []
+    )
+
     staleOrders.forEach(order => {
-      anomaliesToInsert.push({
-        type: 'STALE_ORDER',
-        description: `Order ${order.marketplace_order_id} masih berstatus ${order.status} sejak ${new Date(order.created_at).toLocaleDateString('id-ID')}. Mohon cek dengan platform.`,
-        related_ids: { order_id: order.id },
-        status: 'OPEN'
-      })
+      if (!existingStaleOrderIds.has(order.id)) {
+        anomaliesToInsert.push({
+          type: 'STALE_ORDER',
+          description: `Order ${order.marketplace_order_id} masih berstatus ${order.status} sejak ${new Date(order.created_at).toLocaleDateString('id-ID')}. Mohon cek dengan platform.`,
+          related_ids: { order_id: order.id },
+          status: 'OPEN'
+        })
+      }
     })
   }
 
@@ -46,24 +59,37 @@ export async function GET(request: Request) {
     .eq('status', 'SHIPPED_IN_TRANSIT')
 
   if (processedOrders && processedOrders.length > 0) {
-    const orderIds = processedOrders.map(o => o.id)
+    const marketplaceOrderIds = processedOrders.map(o => o.marketplace_order_id)
     
-    // Get distinct source_ref_ids from ledger that match these orders
+    // Get distinct source_ref_ids from ledger that match these marketplace order IDs
     const { data: ledgerEntries } = await adminClient
       .from('stock_ledger')
       .select('source_ref_id')
-      .in('source_ref_id', orderIds)
+      .in('source_ref_id', marketplaceOrderIds)
     
     const ledgerSet = new Set((ledgerEntries || []).map(l => l.source_ref_id))
 
+    // Prevent creating duplicate MISSING_LEDGER anomalies for the same order if one is already OPEN
+    const { data: existingMissing } = await adminClient
+      .from('anomalies')
+      .select('related_ids')
+      .eq('type', 'MISSING_LEDGER')
+      .eq('status', 'OPEN')
+
+    const existingMissingOrderIds = new Set(
+      existingMissing?.map(a => (a.related_ids as any)?.order_id).filter(Boolean) || []
+    )
+
     processedOrders.forEach(order => {
-      if (!ledgerSet.has(order.id)) {
-        anomaliesToInsert.push({
-          type: 'MISSING_LEDGER',
-          description: `Order ${order.marketplace_order_id} sudah diproses (SHIPPED/IN_TRANSIT) tetapi tidak ditemukan pemotongan stok di Ledger.`,
-          related_ids: { order_id: order.id },
-          status: 'OPEN'
-        })
+      if (!ledgerSet.has(order.marketplace_order_id)) {
+        if (!existingMissingOrderIds.has(order.id)) {
+          anomaliesToInsert.push({
+            type: 'MISSING_LEDGER',
+            description: `Order ${order.marketplace_order_id} sudah diproses (SHIPPED/IN_TRANSIT) tetapi tidak ditemukan pemotongan stok di Ledger.`,
+            related_ids: { order_id: order.id },
+            status: 'OPEN'
+          })
+        }
       }
     })
   }

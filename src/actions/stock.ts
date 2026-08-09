@@ -36,7 +36,8 @@ export async function processStockOutFefo(params: ProcessStockOutFefoParams) {
     p_source_type: params.sourceType,
     p_source_ref_id: params.sourceRefId,
     p_created_by: params.createdBy || null,
-    p_reference_note: params.referenceNote || null
+    p_reference_note: params.referenceNote || null,
+    p_created_at: params.createdAt || null
   })
 
   if (error) {
@@ -52,16 +53,6 @@ export async function processStockOutFefo(params: ProcessStockOutFefoParams) {
       })
     }
     return { success: false, error: error.message }
-  }
-
-  // If a historical timestamp is provided, update the created_at timestamp on stock_ledger
-  if (params.createdAt) {
-    const adminClient = createAdminClient()
-    await adminClient
-      .from('stock_ledger')
-      .update({ created_at: params.createdAt })
-      .eq('source_type', params.sourceType)
-      .eq('source_ref_id', params.sourceRefId)
   }
 
   return { success: true, allocations: data.allocations }
@@ -82,6 +73,18 @@ export async function getProductBalance(productId: string) {
     supabase = createAdminClient()
   }
   
+  // Try querying SQL View product_stock_summary first for SQL-side aggregated balance
+  const { data: viewData, error: viewErr } = await supabase
+    .from('product_stock_summary')
+    .select('physical_qty')
+    .eq('product_id', productId)
+    .maybeSingle()
+
+  if (!viewErr && viewData) {
+    return { success: true, qty: viewData.physical_qty || 0 }
+  }
+
+  // Fallback if View is pending DB migration
   const { data, error } = await supabase
     .from('stock_balance_cache')
     .select('qty')
@@ -107,44 +110,51 @@ export interface ProductAvailability {
 export async function getAvailableToSell(productId?: string) {
   const supabase = createAdminClient()
 
-  // 1. Physical stock from stock_balance_cache
-  let cacheQuery = supabase.from('stock_balance_cache').select('product_id, qty')
-  if (productId) {
-    cacheQuery = cacheQuery.eq('product_id', productId)
+  // 1. Primary Path: Query SQL View product_stock_summary (SQL-side O(1) Pre-aggregated view)
+  try {
+    let query = supabase.from('product_stock_summary').select('*').order('sku')
+    if (productId) {
+      query = query.eq('product_id', productId)
+    }
+    const { data: viewData, error: viewErr } = await query
+
+    if (!viewErr && viewData) {
+      return { success: true, data: viewData as ProductAvailability[] }
+    }
+  } catch {
+    // Fallback below if View is pending DB migration
   }
-  const { data: cache, error: cacheErr } = await cacheQuery
-  if (cacheErr) return { success: false, error: cacheErr.message }
+
+  // 2. Fallback Path: Indexed Batch Querying for products
+  let prodQuery = supabase.from('products').select('id, name, sku').order('sku')
+  if (productId) prodQuery = prodQuery.eq('id', productId)
+  const { data: products, error: prodErr } = await prodQuery
+  if (prodErr) return { success: false, error: prodErr.message }
+
+  const productIds = (products || []).map(p => p.id)
+  if (productIds.length === 0) return { success: true, data: [] }
+
+  const [cacheRes, reservedRes] = await Promise.all([
+    supabase.from('stock_balance_cache').select('product_id, qty').in('product_id', productIds),
+    supabase
+      .from('order_items')
+      .select('product_id, qty, orders!inner(status)')
+      .in('product_id', productIds)
+      .eq('orders.status', 'CREATED')
+  ])
+
+  if (cacheRes.error) return { success: false, error: cacheRes.error.message }
+  if (reservedRes.error) return { success: false, error: reservedRes.error.message }
 
   const physicalMap = new Map<string, number>()
-  cache?.forEach(c => {
+  cacheRes.data?.forEach(c => {
     physicalMap.set(c.product_id, (physicalMap.get(c.product_id) || 0) + c.qty)
   })
 
-  // 2. Reserved stock from order_items joining orders (where status = 'CREATED')
-  let reservedQuery = supabase
-    .from('order_items')
-    .select('product_id, qty, orders!inner(status)')
-    .eq('orders.status', 'CREATED')
-  
-  if (productId) {
-    reservedQuery = reservedQuery.eq('product_id', productId)
-  }
-
-  const { data: reservedItems, error: reservedErr } = await reservedQuery
-  if (reservedErr) return { success: false, error: reservedErr.message }
-
   const reservedMap = new Map<string, number>()
-  reservedItems?.forEach(item => {
+  reservedRes.data?.forEach(item => {
     reservedMap.set(item.product_id, (reservedMap.get(item.product_id) || 0) + item.qty)
   })
-
-  // 3. Products metadata
-  let prodQuery = supabase.from('products').select('id, name, sku').order('sku')
-  if (productId) {
-    prodQuery = prodQuery.eq('id', productId)
-  }
-  const { data: products, error: prodErr } = await prodQuery
-  if (prodErr) return { success: false, error: prodErr.message }
 
   const result: ProductAvailability[] = (products || []).map(p => {
     const physical = physicalMap.get(p.id) || 0

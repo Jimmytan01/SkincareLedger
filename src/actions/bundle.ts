@@ -8,6 +8,15 @@ export async function createBundleRecipe(bundleSku: string, components: { produc
 
   const cleanSku = bundleSku.trim().toUpperCase()
 
+  // Ensure bundle SKU exists in bundles master table with is_active = true
+  try {
+    await adminClient
+      .from('bundles')
+      .upsert({ bundle_sku: cleanSku, is_active: true }, { onConflict: 'bundle_sku', ignoreDuplicates: true })
+  } catch (err) {
+    console.warn('Could not upsert into bundles table (table might be pending migration):', err)
+  }
+
   // Determine next version
   const { data: latest } = await adminClient
     .from('bundle_recipes')
@@ -41,47 +50,28 @@ export async function createBundleRecipe(bundleSku: string, components: { produc
 export async function getInactiveBundleSkus(): Promise<string[]> {
   const adminClient = createAdminClient()
   const { data, error } = await adminClient
-    .from('processed_events')
-    .select('event_id')
-    .eq('event_type', 'BUNDLE_INACTIVE')
+    .from('bundles')
+    .select('bundle_sku')
+    .eq('is_active', false)
 
   if (error || !data) return []
 
-  const PREFIX = 'INACTIVE_BUNDLE:'
-  return data
-    .map(row => row.event_id)
-    .filter(id => id.startsWith(PREFIX))
-    .map(id => id.replace(PREFIX, ''))
+  return data.map(row => row.bundle_sku)
 }
 
 export async function toggleBundleStatus(bundleSku: string, targetActive: boolean) {
   const adminClient = createAdminClient()
   const cleanSku = bundleSku.trim().toUpperCase()
-  const eventId = `INACTIVE_BUNDLE:${cleanSku}`
 
   try {
-    if (targetActive) {
-      // Activating bundle: delete inactive marker
-      const { error } = await adminClient
-        .from('processed_events')
-        .delete()
-        .eq('event_id', eventId)
+    const { error } = await adminClient
+      .from('bundles')
+      .upsert(
+        { bundle_sku: cleanSku, is_active: targetActive },
+        { onConflict: 'bundle_sku' }
+      )
 
-      if (error) throw new Error(error.message)
-    } else {
-      // Deactivating bundle: insert inactive marker
-      const { error } = await adminClient
-        .from('processed_events')
-        .insert({
-          event_id: eventId,
-          event_type: 'BUNDLE_INACTIVE',
-          processed_at: new Date().toISOString()
-        })
-
-      if (error && error.code !== '23505') {
-        throw new Error(error.message)
-      }
-    }
+    if (error) throw new Error(error.message)
 
     revalidatePath('/bundles')
     revalidatePath('/simulation')

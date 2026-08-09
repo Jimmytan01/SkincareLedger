@@ -5,7 +5,17 @@ import { MarketplaceEventSchema, MarketplaceEvent } from '@/types/marketplace'
 import { processStockOutFefo, ReasonCode, Channel } from './stock'
 import { formatQty } from '@/utils/format'
 
-export async function processMarketplaceEvent(event: MarketplaceEvent) {
+export async function processMarketplaceEvent(rawEvent: MarketplaceEvent) {
+  // Centralized Fallback for timestamp: if timestamp is missing/empty/null, fallback to server time ONCE
+  const timestamp: string = (rawEvent.timestamp && typeof rawEvent.timestamp === 'string' && rawEvent.timestamp.trim() !== '')
+    ? rawEvent.timestamp
+    : new Date().toISOString()
+
+  const event: MarketplaceEvent = {
+    ...rawEvent,
+    timestamp
+  }
+
   // 1. Server-side validation via Zod
   const validation = MarketplaceEventSchema.safeParse(event)
   if (!validation.success) {
@@ -206,19 +216,11 @@ async function handleCancelled(supabase: any, event: MarketplaceEvent) {
   if (order.status === 'SHIPPED_IN_TRANSIT') {
     const { error: cancelErr } = await supabase.rpc('process_marketplace_cancel', {
       p_order_id: event.order_id,
-      p_channel: event.channel
+      p_channel: event.channel,
+      p_created_at: event.timestamp || null
     })
 
     if (cancelErr) throw new Error(`Gagal memproses pembalikan ledger pembatalan: ${cancelErr.message}`)
-
-    if (event.timestamp) {
-      await supabase
-        .from('stock_ledger')
-        .update({ created_at: event.timestamp })
-        .eq('source_type', 'MARKETPLACE_ORDER')
-        .eq('source_ref_id', event.order_id)
-        .eq('reason_code', 'CANCEL_REVERSAL')
-    }
   }
 
   // NOTE: Pembatalan TIDAK PERNAH memasukkan entri ke tabel returns / Inbox Retur!

@@ -12,7 +12,7 @@ export const MarketplaceEventSchema = z.object({
       qty: z.number().int().positive('qty must be a positive integer'),
     })
   ).optional().default([]),
-  timestamp: z.string().datetime({ message: 'Must be a valid ISO 8601 timestamp' }),
+  timestamp: z.string().datetime({ message: 'Must be a valid ISO 8601 timestamp' }).optional().or(z.literal('')),
 })
 
 export type MarketplaceEvent = z.infer<typeof MarketplaceEventSchema>

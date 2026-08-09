@@ -166,18 +166,39 @@ export async function validateMultiManualEntry(payload: MultiManualEntryPayload)
 
   const adminClient = createAdminClient()
 
-  // Fetch product info for all items
-  const { data: prodData } = await adminClient
-    .from('products')
-    .select('id, name, sku')
-    .in('id', productIds)
+  // BATCH FETCH ALL DATA IN PARALLEL BEFORE LOOP (Eliminates N+1 DB Queries)
+  const [prodRes, cacheRes, reservedRes] = await Promise.all([
+    adminClient.from('products').select('id, name, sku').in('id', productIds),
+    adminClient.from('stock_balance_cache').select('product_id, qty').in('product_id', productIds),
+    adminClient
+      .from('order_items')
+      .select('product_id, qty, orders!inner(status)')
+      .in('product_id', productIds)
+      .eq('orders.status', 'CREATED')
+  ])
 
-  const prodMap = new Map((prodData || []).map(p => [p.id, p]))
+  if (prodRes.error) return { success: false, error: `Gagal mengambil data produk: ${prodRes.error.message}` }
+  if (cacheRes.error) return { success: false, error: `Gagal mengambil saldo stok: ${cacheRes.error.message}` }
+  if (reservedRes.error) return { success: false, error: `Gagal mengambil reservasi stok: ${reservedRes.error.message}` }
+
+  // Pre-aggregate product metadata, physical stock, and reserved stock in memory
+  const prodMap = new Map((prodRes.data || []).map(p => [p.id, p]))
+
+  const physicalMap = new Map<string, number>()
+  cacheRes.data?.forEach(c => {
+    physicalMap.set(c.product_id, (physicalMap.get(c.product_id) || 0) + (c.qty || 0))
+  })
+
+  const reservedMap = new Map<string, number>()
+  reservedRes.data?.forEach(item => {
+    reservedMap.set(item.product_id, (reservedMap.get(item.product_id) || 0) + (item.qty || 0))
+  })
 
   const validationItems: MultiValidationProductItem[] = []
   let hasError = false
   let isBlocked = false
 
+  // IN-MEMORY LOOP (ZERO Database Queries Inside Loop)
   for (const item of payload.items) {
     if (item.qty <= 0) {
       return { success: false, error: 'Kuantitas setiap produk harus lebih dari 0' }
@@ -187,18 +208,10 @@ export async function validateMultiManualEntry(payload: MultiManualEntryPayload)
     const pName = pInfo?.name || item.productId
     const pSku = pInfo?.sku || ''
 
-    const balanceRes = await getProductBalance(item.productId)
-    const currentBalance = balanceRes.success ? (balanceRes.qty || 0) : 0
+    const currentBalance = physicalMap.get(item.productId) || 0
     const projectedBalance = currentBalance - item.qty
 
-    // Reserved stock from CREATED orders
-    const { data: reservedItems } = await adminClient
-      .from('order_items')
-      .select('qty, orders!inner(status)')
-      .eq('product_id', item.productId)
-      .eq('orders.status', 'CREATED')
-
-    const reservedQty = (reservedItems || []).reduce((sum, r) => sum + (r.qty || 0), 0)
+    const reservedQty = reservedMap.get(item.productId) || 0
     const availableQty = Math.max(0, currentBalance - reservedQty)
 
     const isPhysicalInsufficient = projectedBalance < 0
@@ -263,6 +276,16 @@ export async function commitMultiManualEntry(payload: MultiManualEntryPayload, i
 
   const batchRefId = idempotencyKey || `MANUAL-${Date.now()}`
 
+  // Track items that successfully allocated FEFO stock
+  const successfulItems: {
+    productId: string
+    qty: number
+    allocations: { batch_id: string; qty: number }[]
+  }[] = []
+
+  let failedProduct: string | null = null
+  let failedError: string | null = null
+
   for (const item of payload.items) {
     const fefoRes = await processStockOutFefo({
       productId: item.productId,
@@ -276,7 +299,50 @@ export async function commitMultiManualEntry(payload: MultiManualEntryPayload, i
     })
 
     if (!fefoRes.success) {
-      return { success: false, error: fefoRes.error || `Gagal mengalokasikan stok via FEFO untuk produk ${item.productId}` }
+      failedProduct = item.productId
+      failedError = fefoRes.error || `Gagal mengalokasikan stok via FEFO`
+      break
+    }
+
+    successfulItems.push({
+      productId: item.productId,
+      qty: item.qty,
+      allocations: fefoRes.allocations || []
+    })
+  }
+
+  // If any item failed mid-loop, perform COMPENSATING ROLLBACK for all previously successful items
+  if (failedError) {
+    const adminClient = createAdminClient()
+    const rollbackEntries: any[] = []
+
+    for (const succ of successfulItems) {
+      for (const alloc of succ.allocations) {
+        rollbackEntries.push({
+          product_id: succ.productId,
+          batch_id: alloc.batch_id,
+          qty_delta: alloc.qty, // Positive delta to reverse stock deduction
+          reason_code: 'MANUAL_CORRECTION',
+          channel: payload.channel,
+          source_type: 'MULTI_ENTRY_ROLLBACK',
+          source_ref_id: batchRefId,
+          created_by: userId || null,
+          idempotency_key: `ROLLBACK-${batchRefId}-${succ.productId}-${alloc.batch_id}`,
+          reference_note: `Auto-reversal: Dibatalkan karena transaksi multi-produk (${batchRefId}) gagal pada item lain (${failedProduct})`
+        })
+      }
+    }
+
+    if (rollbackEntries.length > 0) {
+      const { error: rollErr } = await adminClient.from('stock_ledger').insert(rollbackEntries)
+      if (rollErr) {
+        console.error('Failed to insert multi-entry rollback entries:', rollErr)
+      }
+    }
+
+    return {
+      success: false,
+      error: `Transaksi dibatalkan (All-or-Nothing): ${successfulItems.length} dari ${payload.items.length} produk sempat terproses lalu dikembalikan otomatis karena: ${failedError}`
     }
   }
 
