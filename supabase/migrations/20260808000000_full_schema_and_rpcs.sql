@@ -253,6 +253,8 @@ DECLARE
   v_entry_timestamp TIMESTAMPTZ;
   v_reason_enum public.reason_code_enum;
   v_channel_enum public.channel_enum;
+  v_total_physical_qty INT := 0;
+  v_total_valid_qty INT := 0;
 BEGIN
   IF p_qty_needed <= 0 THEN
     RAISE EXCEPTION 'qty_needed must be > 0';
@@ -270,11 +272,14 @@ BEGIN
   v_entry_timestamp := COALESCE(p_created_at, now());
 
   -- Iterate through available batches ordered by expiry_date ASC (FEFO)
+  -- Filter out expired batches (expiry_date < CURRENT_DATE) UNLESS p_reason_code is 'EXPIRED'
   FOR v_batch IN 
-    SELECT b.id AS batch_id, COALESCE(c.qty, 0) AS current_qty
+    SELECT b.id AS batch_id, COALESCE(c.qty, 0) AS current_qty, b.expiry_date
     FROM public.batches b
     LEFT JOIN public.stock_balance_cache c ON c.batch_id = b.id AND c.product_id = p_product_id
-    WHERE b.product_id = p_product_id AND COALESCE(c.qty, 0) > 0
+    WHERE b.product_id = p_product_id 
+      AND COALESCE(c.qty, 0) > 0
+      AND (p_reason_code = 'EXPIRED' OR b.expiry_date >= CURRENT_DATE)
     ORDER BY b.expiry_date ASC, b.created_at ASC
   LOOP
     IF v_remaining_qty <= 0 THEN
@@ -315,7 +320,23 @@ BEGIN
   END LOOP;
 
   IF v_remaining_qty > 0 THEN
-    RAISE EXCEPTION 'Stok tidak mencukupi. Kurang % unit untuk produk %', v_remaining_qty, p_product_id;
+    SELECT COALESCE(SUM(c.qty), 0) INTO v_total_physical_qty
+    FROM public.batches b
+    JOIN public.stock_balance_cache c ON c.batch_id = b.id AND c.product_id = p_product_id
+    WHERE b.product_id = p_product_id AND c.qty > 0;
+
+    SELECT COALESCE(SUM(c.qty), 0) INTO v_total_valid_qty
+    FROM public.batches b
+    JOIN public.stock_balance_cache c ON c.batch_id = b.id AND c.product_id = p_product_id
+    WHERE b.product_id = p_product_id AND c.qty > 0 AND b.expiry_date >= CURRENT_DATE;
+
+    IF p_reason_code != 'EXPIRED' AND v_total_physical_qty > 0 AND v_total_valid_qty = 0 THEN
+      RAISE EXCEPTION 'Stok tersedia hanya dari batch yang sudah kedaluwarsa, tidak bisa digunakan untuk transaksi ini.';
+    ELSIF p_reason_code != 'EXPIRED' AND v_total_physical_qty > 0 AND v_total_valid_qty < p_qty_needed THEN
+      RAISE EXCEPTION 'Stok tidak mencukupi (stok valid belum kedaluwarsa: % unit). Kurang % unit untuk produk %', v_total_valid_qty, v_remaining_qty, p_product_id;
+    ELSE
+      RAISE EXCEPTION 'Stok tidak mencukupi. Kurang % unit untuk produk %', v_remaining_qty, p_product_id;
+    END IF;
   END IF;
 
   RETURN jsonb_build_object('success', true, 'allocations', v_allocations);
@@ -410,6 +431,7 @@ DECLARE
   v_total_qty INT := 0;
   v_ret_batch_code TEXT;
   v_ret_batch_id UUID;
+  v_existing_batch_id UUID;
   v_expiry_date DATE;
   v_channel_enum public.channel_enum;
   v_idemp_key TEXT;
@@ -450,17 +472,30 @@ BEGIN
     v_qty := (v_item->>'qty')::INT;
 
     IF v_condition_text = 'LAYAK_JUAL' THEN
-      v_ret_batch_code := 'RET-' || substring(p_return_id::text from 1 for 8) || '-' || extract(epoch from now())::bigint;
-
-      IF (v_item->>'isUnknownExpiry')::boolean IS TRUE OR (v_item->>'expiryDate') IS NULL OR trim(v_item->>'expiryDate') = '' THEN
-        v_expiry_date := (CURRENT_DATE + INTERVAL '1 year')::DATE;
-      ELSE
-        v_expiry_date := (v_item->>'expiryDate')::DATE;
+      IF (v_item->>'expiryDate') IS NULL OR trim(v_item->>'expiryDate') = '' THEN
+        RAISE EXCEPTION 'Tanggal kedaluwarsa (expiryDate) wajib diisi untuk kondisi LAYAK_JUAL';
       END IF;
 
-      INSERT INTO public.batches (product_id, batch_code, expiry_date)
-      VALUES (p_product_id, v_ret_batch_code, v_expiry_date)
-      RETURNING id INTO v_ret_batch_id;
+      v_expiry_date := (v_item->>'expiryDate')::DATE;
+
+      -- Check if there is an existing return batch for this product with exact same expiry date
+      SELECT id INTO v_existing_batch_id
+      FROM public.batches
+      WHERE product_id = p_product_id
+        AND expiry_date = v_expiry_date
+        AND batch_code LIKE 'RET-%'
+      ORDER BY created_at ASC
+      LIMIT 1;
+
+      IF v_existing_batch_id IS NOT NULL THEN
+        v_ret_batch_id := v_existing_batch_id;
+      ELSE
+        v_ret_batch_code := 'RET-' || substring(p_return_id::text from 1 for 8) || '-' || extract(epoch from now())::bigint;
+
+        INSERT INTO public.batches (product_id, batch_code, expiry_date)
+        VALUES (p_product_id, v_ret_batch_code, v_expiry_date)
+        RETURNING id INTO v_ret_batch_id;
+      END IF;
 
       v_idemp_key := 'RET-IN-' || p_return_id || '-' || v_ret_batch_id;
       

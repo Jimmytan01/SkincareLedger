@@ -24,7 +24,7 @@ export default function ReturnsInboxPage() {
   const [filterSearch, setFilterSearch] = useState('')
 
   const [inspectingRet, setInspectingRet] = useState<any>(null)
-  const [splits, setSplits] = useState<{ condition: any, qty: number, expiryDate: string, isUnknownExpiry: boolean }[]>([])
+  const [splits, setSplits] = useState<{ condition: any, qty: number, expiryDate: string }[]>([])
   const [inspectError, setInspectError] = useState('')
   const [inspectLoading, setInspectLoading] = useState(false)
 
@@ -160,7 +160,7 @@ export default function ReturnsInboxPage() {
 
   const openInspection = (ret: any) => {
     setInspectingRet(ret)
-    setSplits([{ condition: 'LAYAK_JUAL', qty: ret.qty_requested, expiryDate: '', isUnknownExpiry: false }])
+    setSplits([{ condition: 'LAYAK_JUAL', qty: ret.qty_requested, expiryDate: '' }])
     setInspectError('')
   }
 
@@ -176,8 +176,8 @@ export default function ReturnsInboxPage() {
 
     // Validate expiry dates
     for (const s of splits) {
-      if (s.condition === 'LAYAK_JUAL' && !s.isUnknownExpiry && !s.expiryDate) {
-        setInspectError('Expiry date wajib diisi untuk Layak Jual (atau centang Tidak Diketahui)')
+      if (s.condition === 'LAYAK_JUAL' && (!s.expiryDate || s.expiryDate.trim() === '')) {
+        setInspectError('Tanggal kedaluwarsa (expiry date) wajib diisi untuk Layak Jual')
         return
       }
     }
@@ -193,8 +193,7 @@ export default function ReturnsInboxPage() {
       items: splits.map(s => ({
         condition: s.condition,
         qty: s.qty,
-        expiryDate: s.isUnknownExpiry ? null : s.expiryDate,
-        isUnknownExpiry: s.isUnknownExpiry
+        expiryDate: s.expiryDate
       }))
     }
 
@@ -665,37 +664,25 @@ export default function ReturnsInboxPage() {
                     )}
 
                     {split.condition === 'LAYAK_JUAL' && (
-                      <div className="mt-4 p-3.5 sm:p-4 bg-honey-50/50 border border-honey-100 rounded-lg space-y-3">
+                      <div className="mt-4 p-3.5 sm:p-4 bg-honey-50/50 border border-honey-100 rounded-lg space-y-2">
                         <p className="text-xs font-semibold text-honey-800 uppercase tracking-wider flex items-center gap-1.5">
-                          <AlertCircle size={14} className="shrink-0" /> Batch Expiry Date (Wajib dibaca dari kemasan)
+                          <AlertCircle size={14} className="shrink-0" /> Batch Expiry Date (Wajib)
                         </p>
-                        <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
+                        <div className="flex flex-col gap-1.5">
                           <input 
                             type="date" 
-                            disabled={split.isUnknownExpiry}
+                            required
                             value={split.expiryDate}
                             onChange={e => {
                               const newSplits = [...splits]; newSplits[idx].expiryDate = e.target.value; setSplits(newSplits);
                             }}
-                            className="border border-slate-300 rounded-lg px-3 py-2 bg-white disabled:bg-slate-100 disabled:text-slate-400 focus:ring-2 focus:ring-jade-500 focus:outline-none text-sm w-full sm:w-auto"
+                            className="border border-slate-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-jade-500 focus:outline-none text-sm w-full sm:w-auto"
                           />
-                          <label className="flex items-start sm:items-center gap-2 text-sm text-slate-700 cursor-pointer select-none leading-snug">
-                            <input 
-                              type="checkbox" 
-                              checked={split.isUnknownExpiry}
-                              onChange={e => {
-                                const newSplits = [...splits]; newSplits[idx].isUnknownExpiry = e.target.checked; setSplits(newSplits);
-                              }}
-                              className="w-4 h-4 text-jade-600 rounded border-slate-300 focus:ring-jade-500 mt-0.5 sm:mt-0 shrink-0"
-                            />
-                            <span>Tanggal kedaluwarsa tidak diketahui</span>
-                          </label>
-                        </div>
-                        {split.isUnknownExpiry && (
-                          <p className="text-xs text-brick-600 bg-brick-50 p-2 rounded border border-brick-100 mt-2">
-                            *Peringatan: Batch tanpa expiry date akan diprioritaskan PALING ATAS di alokasi FEFO berikutnya.
+                          <p className="text-xs text-slate-500 font-medium leading-relaxed flex items-center gap-1 mt-0.5">
+                            <Info size={13} className="shrink-0 text-slate-400" />
+                            Kalau label kemasan rusak/tidak terbaca, catat tanggal hari ini sebagai estimasi konservatif
                           </p>
-                        )}
+                        </div>
                       </div>
                     )}
                   </div>
@@ -704,7 +691,7 @@ export default function ReturnsInboxPage() {
 
               {splits.reduce((sum, s) => sum + s.qty, 0) < inspectingRet.qty_requested && (
                 <button 
-                  onClick={() => setSplits([...splits, { condition: 'DAMAGED', qty: 1, expiryDate: '', isUnknownExpiry: false }])}
+                  onClick={() => setSplits([...splits, { condition: 'DAMAGED', qty: 1, expiryDate: '' }])}
                   className="w-full p-3 border-2 border-dashed border-slate-300 text-slate-500 hover:text-slate-700 hover:border-slate-400 rounded-xl text-sm font-semibold transition-colors flex items-center justify-center gap-2 bg-slate-50/50"
                 >
                   <Plus size={16} /> Tambah Pecahan Kondisi Lainnya

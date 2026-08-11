@@ -19,43 +19,125 @@ export interface ProcessStockOutFefoParams {
 }
 
 export async function processStockOutFefo(params: ProcessStockOutFefoParams) {
-  let supabase: any
-  try {
-    supabase = await createClient()
-    const authRes = await supabase.auth.getUser()
-    if (!authRes.data.user) supabase = createAdminClient()
-  } catch {
-    supabase = createAdminClient()
+  if (params.qtyNeeded <= 0) {
+    return { success: false, error: 'qtyNeeded harus > 0' }
   }
-  
-  const { data, error } = await supabase.rpc('process_stock_out_fefo', {
-    p_product_id: params.productId,
-    p_qty_needed: params.qtyNeeded,
-    p_reason_code: params.reasonCode,
-    p_channel: params.channel,
-    p_source_type: params.sourceType,
-    p_source_ref_id: params.sourceRefId,
-    p_created_by: params.createdBy || null,
-    p_reference_note: params.referenceNote || null,
-    p_created_at: params.createdAt || null
-  })
 
-  if (error) {
-    console.error('Error processing stock out fefo:', error)
-    if (error.message.includes('qty_non_negative') || error.message.includes('Stok tidak mencukupi')) {
-      const adminClient = createAdminClient()
+  if (['BONUS', 'PROMO', 'SAMPLE'].includes(params.reasonCode)) {
+    if (!params.referenceNote || params.referenceNote.trim() === '') {
+      return { success: false, error: `Catatan referensi (reference_note) wajib diisi untuk reason code ${params.reasonCode}` }
+    }
+  }
+
+  const adminClient = createAdminClient()
+  const todayStr = new Date().toISOString().split('T')[0]
+
+  try {
+    // 1. Fetch all batches for product
+    const { data: batches, error: bErr } = await adminClient
+      .from('batches')
+      .select('id, expiry_date, created_at')
+      .eq('product_id', params.productId)
+      .order('expiry_date', { ascending: true })
+      .order('created_at', { ascending: true })
+
+    if (bErr) {
+      return { success: false, error: `Gagal mengambil batch: ${bErr.message}` }
+    }
+
+    // 2. Fetch stock_balance_cache for product
+    const { data: cacheData, error: cErr } = await adminClient
+      .from('stock_balance_cache')
+      .select('batch_id, qty')
+      .eq('product_id', params.productId)
+      .gt('qty', 0)
+
+    if (cErr) {
+      return { success: false, error: `Gagal mengambil saldo cache: ${cErr.message}` }
+    }
+
+    const cacheMap = new Map((cacheData || []).map(c => [c.batch_id, c.qty]))
+
+    let totalPhysicalQty = 0
+    let totalValidQty = 0
+    const eligibleBatches: { id: string; qty: number; expiryDate: string }[] = []
+
+    for (const b of (batches || [])) {
+      const q = cacheMap.get(b.id) || 0
+      if (q > 0) {
+        totalPhysicalQty += q
+        const isValid = b.expiry_date >= todayStr
+        if (isValid) {
+          totalValidQty += q
+        }
+
+        if (params.reasonCode === 'EXPIRED' || isValid) {
+          eligibleBatches.push({ id: b.id, qty: q, expiryDate: b.expiry_date })
+        }
+      }
+    }
+
+    // Check if eligible stock satisfies qtyNeeded
+    const totalEligibleQty = eligibleBatches.reduce((sum, b) => sum + b.qty, 0)
+    if (totalEligibleQty < params.qtyNeeded) {
+      let errorMsg = `Stok tidak mencukupi. Kurang ${params.qtyNeeded - totalEligibleQty} unit`
+
+      if (params.reasonCode !== 'EXPIRED' && totalPhysicalQty > 0 && totalValidQty === 0) {
+        errorMsg = 'Stok tersedia hanya dari batch yang sudah kedaluwarsa, tidak bisa digunakan untuk transaksi ini.'
+      } else if (params.reasonCode !== 'EXPIRED' && totalPhysicalQty > 0 && totalValidQty < params.qtyNeeded) {
+        errorMsg = `Stok tidak mencukupi (stok valid belum kedaluwarsa: ${totalValidQty} unit). Kurang ${params.qtyNeeded - totalValidQty} unit untuk produk`
+      }
+
       await adminClient.from('anomalies').insert({
         type: 'NEGATIVE_BALANCE_ATTEMPT',
-        description: `Upaya transaksi (${params.reasonCode}) ditolak karena stok tidak cukup.`,
+        description: `Upaya transaksi (${params.reasonCode}) ditolak: ${errorMsg}`,
         related_ids: { product_id: params.productId, qty_needed: params.qtyNeeded },
         status: 'OPEN',
         detected_at: params.createdAt || new Date().toISOString()
       })
-    }
-    return { success: false, error: error.message }
-  }
 
-  return { success: true, allocations: data.allocations }
+      return { success: false, error: errorMsg }
+    }
+
+    // Allocate FEFO stock
+    let remainingQty = params.qtyNeeded
+    const allocations: { batch_id: string; qty: number }[] = []
+    const timestamp = params.createdAt || new Date().toISOString()
+
+    const ledgerInserts: any[] = []
+
+    for (const b of eligibleBatches) {
+      if (remainingQty <= 0) break
+      const takeQty = Math.min(remainingQty, b.qty)
+
+      const idempKey = `${params.sourceRefId}-${b.id}-${params.reasonCode}-${new Date(timestamp).getTime()}`
+      ledgerInserts.push({
+        product_id: params.productId,
+        batch_id: b.id,
+        qty_delta: -takeQty,
+        reason_code: params.reasonCode,
+        channel: params.channel,
+        source_type: params.sourceType,
+        source_ref_id: params.sourceRefId,
+        created_by: params.createdBy || null,
+        reference_note: params.referenceNote || null,
+        idempotency_key: idempKey,
+        created_at: timestamp
+      })
+
+      allocations.push({ batch_id: b.id, qty: takeQty })
+      remainingQty -= takeQty
+    }
+
+    const { error: ledgerErr } = await adminClient.from('stock_ledger').insert(ledgerInserts)
+    if (ledgerErr) {
+      return { success: false, error: `Gagal mencatat ledger: ${ledgerErr.message}` }
+    }
+
+    return { success: true, allocations }
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Gagal mengalokasikan stok FEFO' }
+  }
 }
 
 export interface FefoAllocationResult {
