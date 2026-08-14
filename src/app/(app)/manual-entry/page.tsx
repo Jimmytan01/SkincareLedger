@@ -70,7 +70,7 @@ export default function ManualEntryPage() {
   const supabase = createClient()
 
   useEffect(() => {
-    supabase.from('products').select('id, name, sku').then(({ data }) => {
+    supabase.from('products').select('id, name, sku').eq('is_active', true).order('name').then(({ data }) => {
       if (data && data.length > 0) {
         setProducts(data)
         const firstProdId = data[0].id

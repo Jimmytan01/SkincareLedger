@@ -84,5 +84,5 @@ Saat API/Webhook asli siap disambungkan:
 ## ⚙️ Skrip & Perintah Pengembangan
 
 - `npm run dev` : Menjalankan server pengembangan lokal.
-- `npm run build` : Membuat production build.
-- `npx tsc --noEmit` : Memeriksa validasi tipe TypeScript.
+- `npm run build` : Membuat production build Next.js.
+- `npm run typecheck` : Memeriksa validasi tipe TypeScript (`npx tsc --noEmit`).

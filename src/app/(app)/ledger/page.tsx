@@ -746,7 +746,13 @@ function LedgerContent() {
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {drilldownData.map(row => (
-                      <tr key={row.id} className="hover:bg-slate-50">
+                      <tr
+                        key={row.id}
+                        className={`hover:bg-slate-50 transition-colors ${
+                          row.reason_code === 'MANUAL_CORRECTION' ? 'bg-amber-50/40' :
+                          row.reason_code === 'OPNAME_CORRECTION' ? 'bg-jade-50/30' : ''
+                        }`}
+                      >
                         <td className="px-5 py-3 font-mono text-xs">{new Date(row.created_at).toLocaleTimeString('id-ID')}</td>
                         <td className="px-5 py-3 font-medium text-slate-900">{row.products?.name}</td>
                         <td className="px-5 py-3 font-mono text-xs">{row.batches?.batch_code}</td>

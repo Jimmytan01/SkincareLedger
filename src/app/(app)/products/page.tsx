@@ -35,6 +35,7 @@ export default function ProductsPage() {
       const { data: prods } = await supabase
         .from('products')
         .select('*')
+        .eq('is_active', true)
         .order('name')
 
       // Fetch stock balance cache with batch expiry info

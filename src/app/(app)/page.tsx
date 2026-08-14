@@ -39,8 +39,8 @@ export default async function Home() {
     recentMovementsRes,
     trendLedgerRes
   ] = await Promise.all([
-    // 1. Total Products Count (using indexed 'id' projection for fast head count)
-    supabase.from('products').select('id', { count: 'exact', head: true }),
+    // 1. Total Products Count (using indexed 'id' projection for fast head count of active products)
+    supabase.from('products').select('id', { count: 'exact', head: true }).eq('is_active', true),
 
     // 2. Open Anomalies Count & Data
     getOpenAnomalies(),
@@ -49,7 +49,7 @@ export default async function Home() {
     supabase.from('order_items').select('qty, orders!inner(status)').eq('orders.status', 'CREATED'),
 
     // 4. Batches & Expiry Data (Up to 90 days out for attention list)
-    supabase.from('batches').select('id, batch_code, expiry_date, product:products!batches_product_id_fkey(name, sku)').lte('expiry_date', ninetyDaysStr),
+    supabase.from('batches').select('id, batch_code, expiry_date, product:products!batches_product_id_fkey(name, sku, is_active)').lte('expiry_date', ninetyDaysStr),
 
     // 5. Returns Data (Pending Inspection ONLY & TikTok 40-Day Claim Countdown)
     supabase.from('returns').select(`
@@ -141,6 +141,7 @@ export default async function Home() {
           const expDate = b.expiry_date ? new Date(b.expiry_date) : null
           const daysRemaining = expDate ? Math.ceil((expDate.getTime() - now.getTime()) / (1000 * 3600 * 24)) : 999
           const prod: any = Array.isArray(b.product) ? b.product[0] : b.product
+          if (prod && prod.is_active === false) continue
 
           processedExpiringBatches.push({
             id: b.id,

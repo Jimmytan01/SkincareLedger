@@ -42,8 +42,12 @@ export async function createBundleRecipe(bundleSku: string, components: { produc
     return { success: false, error: error.message }
   }
 
-  revalidatePath('/bundles')
-  revalidatePath('/simulation')
+  try {
+    revalidatePath('/bundles')
+    revalidatePath('/simulation')
+  } catch {
+    // Ignore revalidatePath error when called outside Next.js request context
+  }
   return { success: true, version: newVersion }
 }
 
@@ -73,8 +77,12 @@ export async function toggleBundleStatus(bundleSku: string, targetActive: boolea
 
     if (error) throw new Error(error.message)
 
-    revalidatePath('/bundles')
-    revalidatePath('/simulation')
+    try {
+      revalidatePath('/bundles')
+      revalidatePath('/simulation')
+    } catch {
+      // Ignore revalidatePath error when called outside Next.js request context
+    }
     return { success: true, isActive: targetActive }
   } catch (err: any) {
     console.error(`Error toggling bundle status for ${cleanSku}:`, err)

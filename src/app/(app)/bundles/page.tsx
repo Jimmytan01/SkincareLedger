@@ -16,6 +16,7 @@ export default async function BundlesPage() {
     supabase
       .from('products')
       .select('id, name, sku')
+      .eq('is_active', true)
       .order('name', { ascending: true }),
     getInactiveBundleSkus()
   ])

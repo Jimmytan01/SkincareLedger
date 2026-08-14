@@ -328,7 +328,7 @@ import { getInactiveBundleSkus } from './bundle'
 export async function getProductsAndBundlesForSimulation() {
   const adminClient = createAdminClient()
   const [productsRes, bundleRecipesRes, inactiveSkus] = await Promise.all([
-    adminClient.from('products').select('id, name, sku').order('name'),
+    adminClient.from('products').select('id, name, sku').eq('is_active', true).order('name'),
     adminClient.from('bundle_recipes').select('bundle_sku').order('bundle_sku'),
     getInactiveBundleSkus()
   ])
